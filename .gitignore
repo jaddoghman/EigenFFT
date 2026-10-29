@@ -1,0 +1,19 @@
+# Main file
+main.cpp
+
+# Todo list
+Todo.txt
+
+# Makefile
+Makefile
+
+# Dockerfile
+Dockerfile
+
+# CMakeLists
+CMakeLists.txt
+
+# Hidden files
+.DS_Store
+.idea/
+.vscode/

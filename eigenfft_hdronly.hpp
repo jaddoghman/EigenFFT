@@ -15,14 +15,23 @@ namespace pfft
         template <typename Derived>
         auto c2c_1d(const Eigen::MatrixBase<Derived>& x, std::optional<size_t> n, size_t axis, Norm norm, bool forward,
                     size_t nthreads);
+        template <typename Derived>
+        auto c2c_2d(const Eigen::MatrixBase<Derived>& x, const std::optional<pocketfft::shape_t>& s,
+                    const pocketfft::shape_t& axes, Norm norm, bool forward, size_t nthreads);
     }
 
     template <typename Derived>
-    auto fft(const Eigen::MatrixBase<Derived> &x, std::optional<size_t> n = std::nullopt, size_t axis=0,
-             Norm norm = Norm::backward, size_t nthreads = 1);
+    auto fft(const Eigen::MatrixBase<Derived>& x, std::optional<size_t> n=std::nullopt, size_t axis=0,
+             Norm norm=Norm::backward, size_t nthreads=1);
     template <typename Derived>
-    auto ifft(const Eigen::MatrixBase<Derived> &x, std::optional<size_t> n = std::nullopt, size_t axis=0,
-              Norm norm = Norm::backward, size_t nthreads = 1);
+    auto ifft(const Eigen::MatrixBase<Derived>& x, std::optional<size_t> n=std::nullopt, size_t axis=0,
+              Norm norm=Norm::backward, size_t nthreads=1);
+    template <typename Derived>
+    auto fft2(const Eigen::MatrixBase<Derived>& x, const pocketfft::shape_t& s={}, const pocketfft::shape_t& axes={0,1},
+              Norm norm=Norm::backward, size_t nthreads=1);
+    template <typename Derived>
+    auto ifft2(const Eigen::MatrixBase<Derived>& x, const pocketfft::shape_t& s={}, const pocketfft::shape_t& axes={0,1},
+               Norm norm=Norm::backward, size_t nthreads=1);
 }
 
 
@@ -42,8 +51,8 @@ auto pfft::core::c2c_1d(const Eigen::MatrixBase<Derived> &x, std::optional<size_
 {
     using namespace Eigen;
     using C = Derived::Scalar;
-    using T = C::value_type;
     static_assert(NumTraits<C>::IsComplex, "c2c requires a complex input");
+    using T = NumTraits<C>::Real;
     static_assert(Derived::IsVectorAtCompileTime, "Expected a vector");
     if (axis != 0)
         throw std::invalid_argument("Vector inputs cannot have axis != 0");
@@ -54,22 +63,75 @@ auto pfft::core::c2c_1d(const Eigen::MatrixBase<Derived> &x, std::optional<size_
         throw std::invalid_argument("Invalid FFT length");
 
     Vector<C, Dynamic> out(N);
-    pocketfft::shape_t shape = {N};
-    pocketfft::shape_t axes = {axis};
-    pocketfft::stride_t stride_out = {sizeof(C)};
+    const pocketfft::shape_t shape = {N};
+    const pocketfft::shape_t axes = {axis};
+    const pocketfft::stride_t stride_out = {sizeof(C)};
     const T fct = scale<T>(norm, N, forward);
-    if constexpr ((internal::traits<Derived>::Flags & DirectAccessBit) != 0)  // x is concrete variable
+    if constexpr ((internal::traits<Derived>::Flags & DirectAccessBit) != 0)  // x is a concrete object
         if (N <= sz)
         {
-            pocketfft::stride_t stride_in = {x.innerStride() * static_cast<std::ptrdiff_t>(sizeof(C))};
+            const pocketfft::stride_t stride_in = {x.innerStride() * static_cast<std::ptrdiff_t>(sizeof(C))};
             pocketfft::c2c(shape, stride_in, stride_out, axes, forward, x.derived().data(), out.data(), fct, nthreads);
 
             return out;
         }
+
+
     // Zero-pad or input isn't a concrete object
-    const size_t m = std::min<size_t>(N, sz);
     Vector<C, Dynamic> in = Vector<C, Dynamic>::Zero(N);
+    const size_t m = std::min<size_t>(N, sz);
     in.head(m) = x.head(m);
+    pocketfft::c2c(shape, stride_out, stride_out, axes, forward, in.data(), out.data(), fct, nthreads);
+
+    return out;
+}
+
+template <typename Derived>
+auto pfft::core::c2c_2d(const Eigen::MatrixBase<Derived>& x, const std::optional<pocketfft::shape_t>& s,
+                        const pocketfft::shape_t& axes, Norm norm, bool forward, size_t nthreads)
+{
+    using namespace Eigen;
+    using C = Derived::Scalar;
+    static_assert(NumTraits<C>::IsComplex, "c2c requires a complex input");
+    using T = NumTraits<C>::Real;
+    static_assert(Derived::NumDimensions == 2, "Expected a 2D matrix");
+    if (s.has_value() && s->size() != axes.size())
+        throw std::invalid_argument("Shape and axes have different lengths");
+    for (const size_t a : axes)
+        if (a > 1)
+            throw std::out_of_range("Entries of axes must be 0 or 1");
+
+    const size_t m = x.rows(), n = x.cols();
+    size_t M = m, N = n;
+    if (s.has_value())
+        for (size_t i = 0; i < axes.size(); i++)
+            (axes[i] == 0 ? M : N) = (*s)[i];
+    if (M == 0 || N == 0)
+        throw std::invalid_argument("Invalid FFT length");
+
+    // Normalization uses only the transformed axis
+    size_t nfft = 1;
+    for (const size_t a : axes)
+        nfft *= (a == 0 ? M : N);
+    const T fct = scale<T>(norm, nfft, forward);
+
+    Matrix<C, Dynamic, Dynamic> out(M, N);
+    const auto sz = static_cast<std::ptrdiff_t>(sizeof(C));
+    const pocketfft::shape_t shape = {M, N};
+    const pocketfft::stride_t stride_out = {sz, static_cast<std::ptrdiff_t>(M)*sz};
+    if constexpr ((internal::traits<Derived>::Flags & DirectAccessBit) != 0)  // x is a concrete object
+        if (M <= m && N <= n)
+        {
+            const pocketfft::stride_t stride_in = {x.rowStride()*sz, x.colStride()*sz};
+            pocketfft::c2c(shape, stride_in, stride_out, axes, forward, x.derived().data(), out.data(), fct, nthreads);
+
+            return out;
+        }
+
+    // Zero-pad or input isn't a concrete object
+    Matrix<C, Dynamic, Dynamic> in = Matrix<C, Dynamic, Dynamic>::Zero(M, N);
+    const size_t mm = std::min<size_t>(M, m), nn = std::min<size_t>(N, n);
+    in.topLeftCorner(mm, nn) = x.topLeftCorner(mm, nn);
     pocketfft::c2c(shape, stride_out, stride_out, axes, forward, in.data(), out.data(), fct, nthreads);
 
     return out;
@@ -85,4 +147,26 @@ template <typename Derived>
 auto pfft::ifft(const Eigen::MatrixBase<Derived>& x, std::optional<size_t> n, size_t axis, Norm norm, size_t nthreads)
 {
     return core::c2c_1d(x, n, axis, norm, false, nthreads);
+}
+
+template <typename Derived>
+auto pfft::fft2(const Eigen::MatrixBase<Derived>& x, const pocketfft::shape_t& s, const pocketfft::shape_t& axes,
+                Norm norm, size_t nthreads)
+{
+    std::optional<pocketfft::shape_t> opt;
+    if (!s.empty())
+        opt = s;
+
+    return core::c2c_2d(x, opt, axes, norm, true, nthreads);
+}
+
+template <typename Derived>
+auto pfft::ifft2(const Eigen::MatrixBase<Derived>& x, const pocketfft::shape_t& s, const pocketfft::shape_t& axes,
+                 Norm norm, size_t nthreads)
+{
+    std::optional<pocketfft::shape_t> opt;
+    if (!s.empty())
+        opt = s;
+
+    return core::c2c_2d(x, opt, axes, norm, false, nthreads);
 }

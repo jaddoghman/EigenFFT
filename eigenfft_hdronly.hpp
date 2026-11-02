@@ -12,6 +12,7 @@ namespace pfft
     {
         template <typename T>
         T scale(Norm norm, size_t N, bool forward_dir);
+        inline bool hasDuplicates(const pocketfft::shape_t& vec);
         template <typename Derived>
         auto c2c_1d(const Eigen::MatrixBase<Derived>& x, std::optional<size_t> n, size_t axis, Norm norm, bool forward,
                     size_t nthreads);
@@ -43,6 +44,15 @@ T pfft::core::scale(Norm norm, size_t N, bool forward_dir)
         return static_cast<T>(1) / std::sqrt(static_cast<T>(N));
     const bool is_scaled = (norm == Norm::forward) == forward_dir;
     return is_scaled ? static_cast<T>(1) / static_cast<T>(N) : static_cast<T>(1);
+}
+
+bool pfft::core::hasDuplicates(const pocketfft::shape_t& vec)
+{
+    for (size_t i = 0; i < vec.size(); i++)
+        for (size_t j = i+1; j < vec.size(); j++)
+            if (vec[i] == vec[j])
+                return true;
+    return false;
 }
 
 template <typename Derived>

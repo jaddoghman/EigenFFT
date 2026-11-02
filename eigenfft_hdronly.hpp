@@ -51,36 +51,34 @@ auto pfft::core::c2c_1d(const Eigen::MatrixBase<Derived> &x, std::optional<size_
 {
     using namespace Eigen;
     using C = Derived::Scalar;
-    static_assert(NumTraits<C>::IsComplex, "c2c requires a complex input");
     using T = NumTraits<C>::Real;
     static_assert(Derived::IsVectorAtCompileTime, "Expected a vector");
     if (axis != 0)
         throw std::invalid_argument("Vector inputs cannot have axis != 0");
 
-    const size_t sz = x.size();
-    const size_t N = n.value_or(sz);
+    const size_t m = x.size();
+    const size_t N = n.value_or(m);
     if (N == 0)
         throw std::invalid_argument("Invalid FFT length");
 
-    Vector<C, Dynamic> out(N);
+    Vector<std::complex<T>, Dynamic> out(N);  // Output is always complex-valued
     const pocketfft::shape_t shape = {N};
     const pocketfft::shape_t axes = {axis};
-    const pocketfft::stride_t stride_out = {sizeof(C)};
+    const pocketfft::stride_t stride_out = {static_cast<std::ptrdiff_t>(sizeof(std::complex<T>))};
     const T fct = scale<T>(norm, N, forward);
-    if constexpr ((internal::traits<Derived>::Flags & DirectAccessBit) != 0)  // x is a concrete object
-        if (N <= sz)
+    if constexpr ((internal::traits<Derived>::Flags & DirectAccessBit) != 0 && NumTraits<C>::IsComplex)
+        if (N <= m)
         {
-            const pocketfft::stride_t stride_in = {x.innerStride() * static_cast<std::ptrdiff_t>(sizeof(C))};
+            const pocketfft::stride_t stride_in = {x.derived().innerStride() * static_cast<std::ptrdiff_t>(sizeof(C))};
             pocketfft::c2c(shape, stride_in, stride_out, axes, forward, x.derived().data(), out.data(), fct, nthreads);
 
             return out;
         }
 
-
     // Zero-pad or input isn't a concrete object
-    Vector<C, Dynamic> in = Vector<C, Dynamic>::Zero(N);
-    const size_t m = std::min<size_t>(N, sz);
-    in.head(m) = x.head(m);
+    Vector<std::complex<T>, Dynamic> in = Vector<std::complex<T>, Dynamic>::Zero(N);
+    const size_t k = std::min<size_t>(N, m);
+    in.head(k) = x.head(k).template cast<std::complex<T>>();
     pocketfft::c2c(shape, stride_out, stride_out, axes, forward, in.data(), out.data(), fct, nthreads);
 
     return out;

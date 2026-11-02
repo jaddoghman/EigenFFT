@@ -90,9 +90,7 @@ auto pfft::core::c2c_2d(const Eigen::MatrixBase<Derived>& x, const std::optional
 {
     using namespace Eigen;
     using C = Derived::Scalar;
-    static_assert(NumTraits<C>::IsComplex, "c2c requires a complex input");
     using T = NumTraits<C>::Real;
-    static_assert(Derived::NumDimensions == 2, "Expected a 2D matrix");
     if (s.has_value() && s->size() != axes.size())
         throw std::invalid_argument("Shape and axes have different lengths");
     for (const size_t a : axes)
@@ -113,23 +111,23 @@ auto pfft::core::c2c_2d(const Eigen::MatrixBase<Derived>& x, const std::optional
         nfft *= (a == 0 ? M : N);
     const T fct = scale<T>(norm, nfft, forward);
 
-    Matrix<C, Dynamic, Dynamic> out(M, N);
-    const auto sz = static_cast<std::ptrdiff_t>(sizeof(C));
+    Matrix<std::complex<T>, Dynamic, Dynamic> out(M, N);
+    const auto sz = static_cast<std::ptrdiff_t>(sizeof(std::complex<T>));
     const pocketfft::shape_t shape = {M, N};
     const pocketfft::stride_t stride_out = {sz, static_cast<std::ptrdiff_t>(M)*sz};
-    if constexpr ((internal::traits<Derived>::Flags & DirectAccessBit) != 0)  // x is a concrete object
+    if constexpr ((internal::traits<Derived>::Flags & DirectAccessBit) != 0 && NumTraits<C>::IsComplex)
         if (M <= m && N <= n)
         {
-            const pocketfft::stride_t stride_in = {x.rowStride()*sz, x.colStride()*sz};
+            const pocketfft::stride_t stride_in = {x.derived().rowStride()*sz, x.derived().colStride()*sz};
             pocketfft::c2c(shape, stride_in, stride_out, axes, forward, x.derived().data(), out.data(), fct, nthreads);
 
             return out;
         }
 
     // Zero-pad or input isn't a concrete object
-    Matrix<C, Dynamic, Dynamic> in = Matrix<C, Dynamic, Dynamic>::Zero(M, N);
+    Matrix<std::complex<T>, Dynamic, Dynamic> in = Matrix<std::complex<T>, Dynamic, Dynamic>::Zero(M, N);
     const size_t mm = std::min<size_t>(M, m), nn = std::min<size_t>(N, n);
-    in.topLeftCorner(mm, nn) = x.topLeftCorner(mm, nn);
+    in.topLeftCorner(mm, nn) = x.topLeftCorner(mm, nn).template cast<std::complex<T>>();
     pocketfft::c2c(shape, stride_out, stride_out, axes, forward, in.data(), out.data(), fct, nthreads);
 
     return out;

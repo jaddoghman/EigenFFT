@@ -10,12 +10,13 @@ namespace pfft
 
     namespace core
     {
+        template <typename Derived, typename T>
+        struct InputView1D;  // Manage 1D arrays size and input size of FFT
         template <typename T>
         T scale(Norm norm, size_t N, bool forward_dir);
         inline bool hasDuplicates(const pocketfft::shape_t& vec);
         template <typename T>
         auto resizeAxis(const Eigen::Matrix<T, Eigen::Dynamic, Eigen::Dynamic>& mat, size_t axis, size_t L);
-
         template <typename Derived>
         auto c2c_1d(const Eigen::MatrixBase<Derived>& x, std::optional<size_t> n, size_t axis, Norm norm, bool forward,
                     size_t nthreads);
@@ -43,6 +44,43 @@ namespace pfft
 
 
 // ==========================================Definitions==========================================
+template <typename Derived, typename T>
+struct pfft::core::InputView1D
+{
+private:
+    using S = Derived::Scalar;  // Input type
+    using RType = std::conditional_t<std::is_same_v<S, T>, S, T>;
+    std::ptrdiff_t mStride;
+    const RType* mPtr;
+    Eigen::Vector<T, Eigen::Dynamic> mBuf;  // If input isn't a concrete object or has ≠ type
+public:
+    InputView1D() : mStride(0), mPtr(nullptr) { }
+    InputView1D(const InputView1D&) = delete;
+    InputView1D(InputView1D&&) = delete;
+    ~InputView1D() = default;
+    explicit InputView1D(const Eigen::MatrixBase<Derived>& x, size_t len)
+    {
+        using namespace Eigen;
+        const size_t m = x.size();
+        if constexpr ((internal::traits<Derived>::Flags & DirectAccessBit) != 0 && std::is_same_v<S, T>)
+            if (len <= m)
+            {
+                this->mStride = static_cast<std::ptrdiff_t>(x.derived().innerStride() * sizeof(S));
+                this->mPtr = x.derived().data();
+                return;
+            }
+
+        // Zero-pad or input x isn't a concrete object or input x has different type
+        this->mBuf = Vector<T, Dynamic>::Zero(len);
+        const size_t mm = std::min<size_t>(len, m);
+        this->mBuf.head(mm) = x.head(mm).template cast<T>();
+        this->mPtr = mBuf.data();
+        this->mStride = static_cast<std::ptrdiff_t>(sizeof(T));
+    }
+    [[nodiscard]] std::ptrdiff_t stride() const { return mStride; }
+    [[nodiscard]] const T* ptr() const { return mPtr; }
+};
+
 template <typename T>
 T pfft::core::scale(Norm norm, size_t N, bool forward_dir)
 {
@@ -81,35 +119,24 @@ auto pfft::core::c2c_1d(const Eigen::MatrixBase<Derived> &x, std::optional<size_
 {
     using namespace Eigen;
     using C = Derived::Scalar;
-    using T = NumTraits<C>::Real;
-    static_assert(Derived::IsVectorAtCompileTime, "Expected a vector");
+    using R = NumTraits<C>::Real;
+    static_assert(Derived::IsVectorAtCompileTime, "Expected a 1D array");
     if (axis != 0)
-        throw std::invalid_argument("Vector inputs cannot have axis != 0");
+        throw std::invalid_argument("1D array inputs are not allowed to have axis != 0");
 
     const size_t m = x.size();
-    const size_t N = n.value_or(m);
-    if (N == 0)
+    const size_t M = n.value_or(m);
+    if (M == 0)
         throw std::invalid_argument("Invalid FFT length");
 
-    Vector<std::complex<T>, Dynamic> out(N);  // Output is always complex-valued
-    const pocketfft::shape_t shape = {N};
+    Vector<std::complex<R>, Dynamic> out(M);  // Output is always complex-valued
+    const pocketfft::shape_t shape = {M};
     const pocketfft::shape_t axes = {axis};
-    const pocketfft::stride_t stride_out = {static_cast<std::ptrdiff_t>(sizeof(std::complex<T>))};
-    const T fct = scale<T>(norm, N, forward);
-    if constexpr ((internal::traits<Derived>::Flags & DirectAccessBit) != 0 && NumTraits<C>::IsComplex)
-        if (N <= m)
-        {
-            const pocketfft::stride_t stride_in = {x.derived().innerStride() * static_cast<std::ptrdiff_t>(sizeof(C))};
-            pocketfft::c2c(shape, stride_in, stride_out, axes, forward, x.derived().data(), out.data(), fct, nthreads);
+    const pocketfft::stride_t stride_out = {static_cast<std::ptrdiff_t>(sizeof(std::complex<R>))};
+    const R fct = scale<R>(norm, M, forward);
 
-            return out;
-        }
-
-    // Zero-pad or input isn't a concrete object
-    Vector<std::complex<T>, Dynamic> in = Vector<std::complex<T>, Dynamic>::Zero(N);
-    const size_t k = std::min<size_t>(N, m);
-    in.head(k) = x.head(k).template cast<std::complex<T>>();
-    pocketfft::c2c(shape, stride_out, stride_out, axes, forward, in.data(), out.data(), fct, nthreads);
+    InputView1D<Derived, std::complex<R>> in(x, M);
+    pocketfft::c2c(shape, {in.stride()}, stride_out, axes, forward, in.ptr(), out.data(), fct, nthreads);
 
     return out;
 }

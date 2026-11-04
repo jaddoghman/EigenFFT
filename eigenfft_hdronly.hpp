@@ -42,6 +42,9 @@ namespace pfft
     template <typename Derived>
     auto ifft2(const Eigen::MatrixBase<Derived>& x, const pocketfft::shape_t& s={}, const pocketfft::shape_t& axes={0,1},
                Norm norm=Norm::backward, size_t nthreads=1);
+    template <typename Derived>
+    auto rfft(const Eigen::MatrixBase<Derived>& x, std::optional<size_t> n=std::nullopt, size_t axis=0,
+              Norm norm=Norm::backward, size_t nthreads=1);
 }
 
 
@@ -284,4 +287,31 @@ auto pfft::ifft2(const Eigen::MatrixBase<Derived>& x, const pocketfft::shape_t& 
         opt = s;
 
     return core::c2c_2d(x, opt, axes, norm, false, nthreads);
+}
+
+template <typename Derived>
+auto pfft::rfft(const Eigen::MatrixBase<Derived>& x, std::optional<size_t> n, size_t axis, Norm norm, size_t nthreads)
+{
+    using namespace Eigen;
+    using R = Derived::Scalar;
+    static_assert(!NumTraits<R>::IsComplex, "rfft input must be real");
+    static_assert(Derived::IsVectorAtCompileTime, "Expected a 1D array");
+    if (axis != 0)
+        throw std::out_of_range("1D array inputs are not allowed to have axis != 0");
+
+    const size_t m = x.size();
+    const size_t N = n.value_or(m);  // Real transform length
+    if (N == 0)
+        throw std::invalid_argument("Invalid FFT length");
+    const size_t M = N/2 + 1;  // Output length
+
+    core::InputView1D<Derived, R> in(x, N);
+    Vector<std::complex<R>, Dynamic> out(M);  // Complex-valued output
+    const pocketfft::shape_t shape = {N};
+    const pocketfft::shape_t axes = {axis};
+    const pocketfft::stride_t stride_out = {static_cast<std::ptrdiff_t>(sizeof(std::complex<R>))};
+    const R fct = core::scale<R>(norm, N, true);  // Normalization factor
+    pocketfft::r2c(shape, {in.stride()}, stride_out, axes, true, in.ptr(), out.data(), fct, nthreads);
+
+    return out;
 }

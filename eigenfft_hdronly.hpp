@@ -12,6 +12,8 @@ namespace pfft
     {
         template <typename Derived, typename T>
         struct InputView1D;  // Manage 1D arrays size and input size of FFT
+        template <typename Derived, typename T>
+        struct InputView2D;  // Manage 2D arrays size and input size of FFT
         template <typename T>
         T scale(Norm norm, size_t N, bool forward_dir);
         inline bool hasDuplicates(const pocketfft::shape_t& vec);
@@ -44,17 +46,17 @@ namespace pfft
 
 
 // ==========================================Definitions==========================================
-template <typename Derived, typename T>
+template <typename Derived, typename OutputT>
 struct pfft::core::InputView1D
 {
 private:
-    using S = Derived::Scalar;  // Input type
-    using RType = std::conditional_t<std::is_same_v<S, T>, S, T>;
+    using InputT = Derived::Scalar;  // Input type
+    using RType = std::conditional_t<std::is_same_v<InputT, OutputT>, InputT, OutputT>;  // Resulting type
     std::ptrdiff_t mStride;
     const RType* mPtr;
-    Eigen::Vector<T, Eigen::Dynamic> mBuf;  // If input isn't a concrete object or has ≠ type
+    Eigen::Vector<OutputT, Eigen::Dynamic> mBuf;  // If input isn't a concrete object or has ≠ type
 public:
-    InputView1D() : mStride(0), mPtr(nullptr) { }
+    InputView1D() : mStride(0), mPtr(nullptr), mBuf{} { }
     InputView1D(const InputView1D&) = delete;
     InputView1D(InputView1D&&) = delete;
     ~InputView1D() = default;
@@ -62,23 +64,62 @@ public:
     {
         using namespace Eigen;
         const size_t m = x.size();
-        if constexpr ((internal::traits<Derived>::Flags & DirectAccessBit) != 0 && std::is_same_v<S, T>)
+        if constexpr ((internal::traits<Derived>::Flags & DirectAccessBit) != 0 && std::is_same_v<InputT, OutputT>)
             if (len <= m)
             {
-                this->mStride = static_cast<std::ptrdiff_t>(x.derived().innerStride() * sizeof(S));
+                this->mStride = static_cast<std::ptrdiff_t>(x.derived().innerStride() * sizeof(InputT));
                 this->mPtr = x.derived().data();
                 return;
             }
 
         // Zero-pad or input x isn't a concrete object or input x has different type
-        this->mBuf = Vector<T, Dynamic>::Zero(len);
+        this->mBuf = Vector<OutputT, Dynamic>::Zero(len);
         const size_t mm = std::min<size_t>(len, m);
-        this->mBuf.head(mm) = x.head(mm).template cast<T>();
+        this->mBuf.head(mm) = x.head(mm).template cast<OutputT>();
         this->mPtr = mBuf.data();
-        this->mStride = static_cast<std::ptrdiff_t>(sizeof(T));
+        this->mStride = static_cast<std::ptrdiff_t>(sizeof(OutputT));
     }
     [[nodiscard]] std::ptrdiff_t stride() const { return mStride; }
-    [[nodiscard]] const T* ptr() const { return mPtr; }
+    [[nodiscard]] const RType* ptr() const { return mPtr; }
+};
+
+template <typename Derived, typename OutputT>
+struct pfft::core::InputView2D
+{
+private:
+    using InputT = Derived::Scalar;  // Input type
+    using RType = std::conditional_t<std::is_same_v<InputT, OutputT>, InputT, OutputT>;  // Resulting type
+    pocketfft::stride_t mStride;
+    const RType* mPtr;
+    Eigen::Matrix<OutputT, Eigen::Dynamic, Eigen::Dynamic> mBuf;  // If input isn't a concrete object or has ≠ type
+public:
+    InputView2D() = default;
+    InputView2D(const InputView2D&) = delete;
+    InputView2D(InputView2D&&) = delete;
+    ~InputView2D() = default;
+    explicit InputView2D(const Eigen::MatrixBase<Derived>& x, size_t r, size_t c)
+    {
+        using namespace Eigen;
+        const size_t m = x.rows(), n = x.cols();
+        if constexpr ((internal::traits<Derived>::Flags & DirectAccessBit) != 0 && std::is_same_v<InputT, OutputT>)
+            if (r <= m && c <= n)
+            {
+                constexpr auto sz = static_cast<std::ptrdiff_t>(sizeof(InputT));
+                this->mStride = {x.derived().rowStride()*sz, x.derived().colStride()*sz};
+                this->mPtr = x.derived().data();
+                return;
+            }
+
+        // Zero-pad or input x isn't a concrete object or input x has ≠ type
+        this->mBuf = Matrix<OutputT, Dynamic, Dynamic>::Zero(r, c);
+        const size_t rr = std::min<size_t>(r, m), cc = std::min<size_t>(c, n);
+        this->mBuf.topLeftCorner(rr, cc) = x.topLeftCorner(rr, cc).template cast<OutputT>();
+        constexpr auto sz = static_cast<std::ptrdiff_t>(sizeof(OutputT));
+        this->mStride = {mBuf.rowStride()*sz, mBuf.colStride()*sz};
+        this->mPtr = mBuf.data();
+    }
+    [[nodiscard]] const pocketfft::stride_t& stride() const { return mStride; }
+    [[nodiscard]] const RType* ptr() const { return mPtr; }
 };
 
 template <typename T>
@@ -202,24 +243,11 @@ auto pfft::core::c2c_2d(const Eigen::MatrixBase<Derived>& x, const std::optional
     const T fct = scale<T>(norm, nfft, forward);  // Normalization factor
 
     Matrix<std::complex<T>, Dynamic, Dynamic> out(M, N);
+    InputView2D<Derived, std::complex<T>> in(x, M, N);
     const pocketfft::shape_t shape = {M, N};
-    const auto cplx_sz = static_cast<std::ptrdiff_t>(sizeof(std::complex<T>));
-    const pocketfft::stride_t stride_out = {cplx_sz, static_cast<std::ptrdiff_t>(M)*cplx_sz};
-
-    if constexpr ((internal::traits<Derived>::Flags & DirectAccessBit) != 0 && NumTraits<C>::IsComplex)
-        if (M <= m && N <= n)
-        {
-            const pocketfft::stride_t stride_in = {x.derived().rowStride()*cplx_sz, x.derived().colStride()*cplx_sz};
-            pocketfft::c2c(shape, stride_in, stride_out, axes, forward, x.derived().data(), out.data(), fct, nthreads);
-
-            return out;
-        }
-
-    // Zero-pad or input isn't a concrete object or input isn't complex-valued
-    Matrix<std::complex<T>, Dynamic, Dynamic> in = Matrix<std::complex<T>, Dynamic, Dynamic>::Zero(M, N);
-    const size_t mm = std::min<size_t>(M, m), nn = std::min<size_t>(N, n);
-    in.topLeftCorner(mm, nn) = x.topLeftCorner(mm, nn).template cast<std::complex<T>>();
-    pocketfft::c2c(shape, stride_out, stride_out, axes, forward, in.data(), out.data(), fct, nthreads);
+    constexpr auto sz = static_cast<std::ptrdiff_t>(sizeof(std::complex<T>));
+    const pocketfft::stride_t stride_out = {sz, static_cast<std::ptrdiff_t>(M)*sz};
+    pocketfft::c2c(shape, in.stride(), stride_out, axes, forward, in.ptr(), out.data(), fct, nthreads);
 
     return out;
 }

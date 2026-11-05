@@ -6,10 +6,12 @@
 // ==========================================Declarations==========================================
 namespace pfft
 {
+    using namespace Eigen;
     enum class Norm { backward, ortho, forward };
 
     namespace core
     {
+        using namespace Eigen;
         template <typename Derived, typename T>
         struct InputView1D;  // Manage 1D arrays size and input size of FFT
         template <typename Derived, typename T>
@@ -18,41 +20,39 @@ namespace pfft
         T scale(Norm norm, size_t N, bool forward_dir);
         inline bool hasDuplicates(const pocketfft::shape_t& vec);
         template <typename T>
-        auto resizeAxis(const Eigen::Matrix<T, Eigen::Dynamic, Eigen::Dynamic>& mat, size_t axis, size_t L);
+        auto resizeAxis(const Matrix<T, Dynamic, Dynamic>& mat, size_t axis, size_t L);
         template <typename Derived>
-        auto c2c_1d(const Eigen::MatrixBase<Derived>& x, std::optional<size_t> n, size_t axis, Norm norm, bool forward,
+        auto c2c_1d(const MatrixBase<Derived>& x, std::optional<size_t> n, size_t axis, Norm norm, bool forward,
                     size_t nthreads);
         template <typename Derived>
-        auto c2c_dplct(const Eigen::MatrixBase<Derived>& x, const std::optional<pocketfft::shape_t>& s,
+        auto c2c_dplct(const MatrixBase<Derived>& x, const std::optional<pocketfft::shape_t>& s,
                        const pocketfft::shape_t& axes, Norm norm, bool forward, size_t nthreads);
         template <typename Derived>
-        auto c2c_2d(const Eigen::MatrixBase<Derived>& x, const std::optional<pocketfft::shape_t>& s,
+        auto c2c_2d(const MatrixBase<Derived>& x, const std::optional<pocketfft::shape_t>& s,
                     const pocketfft::shape_t& axes, Norm norm, bool forward, size_t nthreads);
         template <typename Derived>
-        auto irfft_vec(const Eigen::MatrixBase<Derived>& x, std::optional<size_t> n, size_t axis, Norm norm,
-                       size_t nthreads);
+        auto irfft_vec(const MatrixBase<Derived>& x, std::optional<size_t> n, size_t axis, Norm norm, size_t nthreads);
         template <typename Derived>
-        auto irfft_mat(const Eigen::MatrixBase<Derived>& x, std::optional<size_t> n, size_t axis, Norm norm,
-                       size_t nthreads);
+        auto irfft_mat(const MatrixBase<Derived>& x, std::optional<size_t> n, size_t axis, Norm norm, size_t nthreads);
     }
 
     template <typename Derived>
-    auto fft(const Eigen::MatrixBase<Derived>& x, std::optional<size_t> n=std::nullopt, size_t axis=0,
+    auto fft(const MatrixBase<Derived>& x, std::optional<size_t> n=std::nullopt, size_t axis=0,
              Norm norm=Norm::backward, size_t nthreads=1);
     template <typename Derived>
-    auto ifft(const Eigen::MatrixBase<Derived>& x, std::optional<size_t> n=std::nullopt, size_t axis=0,
+    auto ifft(const MatrixBase<Derived>& x, std::optional<size_t> n=std::nullopt, size_t axis=0,
               Norm norm=Norm::backward, size_t nthreads=1);
     template <typename Derived>
-    auto fft2(const Eigen::MatrixBase<Derived>& x, const pocketfft::shape_t& s={}, const pocketfft::shape_t& axes={0,1},
+    auto fft2(const MatrixBase<Derived>& x, const pocketfft::shape_t& s={}, const pocketfft::shape_t& axes={0,1},
               Norm norm=Norm::backward, size_t nthreads=1);
     template <typename Derived>
-    auto ifft2(const Eigen::MatrixBase<Derived>& x, const pocketfft::shape_t& s={}, const pocketfft::shape_t& axes={0,1},
+    auto ifft2(const MatrixBase<Derived>& x, const pocketfft::shape_t& s={}, const pocketfft::shape_t& axes={0,1},
                Norm norm=Norm::backward, size_t nthreads=1);
     template <typename Derived>
-    auto rfft(const Eigen::MatrixBase<Derived>& x, std::optional<size_t> n=std::nullopt, size_t axis=0,
+    auto rfft(const MatrixBase<Derived>& x, std::optional<size_t> n=std::nullopt, size_t axis=0,
               Norm norm=Norm::backward, size_t nthreads=1);
     template <typename Derived>
-    auto irfft(const Eigen::MatrixBase<Derived>& x, std::optional<size_t>n=std::nullopt,
+    auto irfft(const MatrixBase<Derived>& x, std::optional<size_t>n=std::nullopt,
                size_t axis=Derived::IsVectorAtCompileTime ? 0:1, Norm norm=Norm::backward, size_t nthreads=1);
 }
 
@@ -66,15 +66,14 @@ private:
     using RType = std::conditional_t<std::is_same_v<InputT, OutputT>, InputT, OutputT>;  // Resulting type
     std::ptrdiff_t mStride;
     const RType* mPtr;
-    Eigen::Vector<OutputT, Eigen::Dynamic> mBuf;  // If input isn't a concrete object or has ≠ type
+    Vector<OutputT, Dynamic> mBuf;  // If input isn't a concrete object or has ≠ type
 public:
     InputView1D() : mStride(0), mPtr(nullptr), mBuf{} { }
     InputView1D(const InputView1D&) = delete;
     InputView1D(InputView1D&&) = delete;
     ~InputView1D() = default;
-    explicit InputView1D(const Eigen::MatrixBase<Derived>& x, size_t len)
+    explicit InputView1D(const MatrixBase<Derived>& x, size_t len)
     {
-        using namespace Eigen;
         const size_t m = x.size();
         if constexpr ((internal::traits<Derived>::Flags & DirectAccessBit) != 0 && std::is_same_v<InputT, OutputT>)
             if (len <= m)
@@ -103,15 +102,14 @@ private:
     using RType = std::conditional_t<std::is_same_v<InputT, OutputT>, InputT, OutputT>;  // Resulting type
     pocketfft::stride_t mStride;
     const RType* mPtr;
-    Eigen::Matrix<OutputT, Eigen::Dynamic, Eigen::Dynamic> mBuf;  // If input isn't a concrete object or has ≠ type
+    Matrix<OutputT, Dynamic, Dynamic> mBuf;  // If input isn't a concrete object or has ≠ type
 public:
     InputView2D() = default;
     InputView2D(const InputView2D&) = delete;
     InputView2D(InputView2D&&) = delete;
     ~InputView2D() = default;
-    explicit InputView2D(const Eigen::MatrixBase<Derived>& x, size_t r, size_t c)
+    explicit InputView2D(const MatrixBase<Derived>& x, size_t r, size_t c)
     {
-        using namespace Eigen;
         const size_t m = x.rows(), n = x.cols();
         if constexpr ((internal::traits<Derived>::Flags & DirectAccessBit) != 0 && std::is_same_v<InputT, OutputT>)
             if (r <= m && c <= n)
@@ -153,9 +151,8 @@ bool pfft::core::hasDuplicates(const pocketfft::shape_t& vec)
 }
 
 template <typename T>
-auto pfft::core::resizeAxis(const Eigen::Matrix<T, Eigen::Dynamic, Eigen::Dynamic>& mat, size_t axis, size_t L)
+auto pfft::core::resizeAxis(const Matrix<T, Dynamic, Dynamic>& mat, size_t axis, size_t L)
 {
-    using namespace Eigen;
     const size_t m = mat.rows(), n = mat.cols();
     const size_t r = axis == 0 ? L : m;
     const size_t c = axis == 1 ? L : n;
@@ -167,10 +164,9 @@ auto pfft::core::resizeAxis(const Eigen::Matrix<T, Eigen::Dynamic, Eigen::Dynami
 }
 
 template <typename Derived>
-auto pfft::core::c2c_1d(const Eigen::MatrixBase<Derived> &x, std::optional<size_t> n, size_t axis, Norm norm,
-                        bool forward, size_t nthreads)
+auto pfft::core::c2c_1d(const MatrixBase<Derived> &x, std::optional<size_t> n, size_t axis, Norm norm, bool forward,
+                        size_t nthreads)
 {
-    using namespace Eigen;
     using C = Derived::Scalar;
     using R = NumTraits<C>::Real;
     static_assert(Derived::IsVectorAtCompileTime, "Expected a 1D array");
@@ -195,10 +191,9 @@ auto pfft::core::c2c_1d(const Eigen::MatrixBase<Derived> &x, std::optional<size_
 }
 
 template <typename Derived>
-auto pfft::core::c2c_dplct(const Eigen::MatrixBase<Derived>& x, const std::optional<pocketfft::shape_t>& s,
+auto pfft::core::c2c_dplct(const MatrixBase<Derived>& x, const std::optional<pocketfft::shape_t>& s,
                            const pocketfft::shape_t& axes, Norm norm, bool forward, size_t nthreads)
 {
-    using namespace Eigen;
     using T = NumTraits<typename Derived::Scalar>::Real;
     constexpr auto cplx_sz = static_cast<std::ptrdiff_t>(sizeof(std::complex<T>));
     Matrix<std::complex<T>, Dynamic, Dynamic> out = x.template cast<std::complex<T>>();
@@ -223,10 +218,9 @@ auto pfft::core::c2c_dplct(const Eigen::MatrixBase<Derived>& x, const std::optio
 }
 
 template <typename Derived>
-auto pfft::core::c2c_2d(const Eigen::MatrixBase<Derived>& x, const std::optional<pocketfft::shape_t>& s,
+auto pfft::core::c2c_2d(const MatrixBase<Derived>& x, const std::optional<pocketfft::shape_t>& s,
                          const pocketfft::shape_t& axes, Norm norm, bool forward, size_t nthreads)
 {
-    using namespace Eigen;
     using C = Derived::Scalar;
     using T = NumTraits<C>::Real;
     if (s.has_value() && s->size() != axes.size())
@@ -265,10 +259,9 @@ auto pfft::core::c2c_2d(const Eigen::MatrixBase<Derived>& x, const std::optional
 }
 
 template <typename Derived>
-auto pfft::core::irfft_vec(const Eigen::MatrixBase<Derived>& x, std::optional<size_t> n, size_t axis, Norm norm,
+auto pfft::core::irfft_vec(const MatrixBase<Derived>& x, std::optional<size_t> n, size_t axis, Norm norm,
                            size_t nthreads)
 {
-    using namespace Eigen;
     using S = Derived::Scalar;  // Can be real or complex
     using R = NumTraits<S>::Real;
     if (Derived::IsVectorAtCompileTime && axis != 0)
@@ -292,10 +285,9 @@ auto pfft::core::irfft_vec(const Eigen::MatrixBase<Derived>& x, std::optional<si
 }
 
 template <typename Derived>
-auto pfft::core::irfft_mat(const Eigen::MatrixBase<Derived>& x, std::optional<size_t> n, size_t axis, Norm norm,
+auto pfft::core::irfft_mat(const MatrixBase<Derived>& x, std::optional<size_t> n, size_t axis, Norm norm,
                            size_t nthreads)
 {
-    using namespace Eigen;
     using S = Derived::Scalar;  // Can be real of complex
     using R = NumTraits<S>::Real;
     if (axis > 1)
@@ -318,20 +310,20 @@ auto pfft::core::irfft_mat(const Eigen::MatrixBase<Derived>& x, std::optional<si
 }
 
 template <typename Derived>
-auto pfft::fft(const Eigen::MatrixBase<Derived>& x, std::optional<size_t> n, size_t axis, Norm norm, size_t nthreads)
+auto pfft::fft(const MatrixBase<Derived>& x, std::optional<size_t> n, size_t axis, Norm norm, size_t nthreads)
 {
     return core::c2c_1d(x, n, axis, norm, true, nthreads);
 }
 
 template <typename Derived>
-auto pfft::ifft(const Eigen::MatrixBase<Derived>& x, std::optional<size_t> n, size_t axis, Norm norm, size_t nthreads)
+auto pfft::ifft(const MatrixBase<Derived>& x, std::optional<size_t> n, size_t axis, Norm norm, size_t nthreads)
 {
     return core::c2c_1d(x, n, axis, norm, false, nthreads);
 }
 
 template <typename Derived>
-auto pfft::fft2(const Eigen::MatrixBase<Derived>& x, const pocketfft::shape_t& s, const pocketfft::shape_t& axes,
-                Norm norm, size_t nthreads)
+auto pfft::fft2(const MatrixBase<Derived>& x, const pocketfft::shape_t& s, const pocketfft::shape_t& axes, Norm norm,
+                size_t nthreads)
 {
     std::optional<pocketfft::shape_t> opt;
     if (!s.empty())
@@ -341,8 +333,8 @@ auto pfft::fft2(const Eigen::MatrixBase<Derived>& x, const pocketfft::shape_t& s
 }
 
 template <typename Derived>
-auto pfft::ifft2(const Eigen::MatrixBase<Derived>& x, const pocketfft::shape_t& s, const pocketfft::shape_t& axes,
-                 Norm norm, size_t nthreads)
+auto pfft::ifft2(const MatrixBase<Derived>& x, const pocketfft::shape_t& s, const pocketfft::shape_t& axes, Norm norm,
+                 size_t nthreads)
 {
     std::optional<pocketfft::shape_t> opt;
     if (!s.empty())
@@ -352,9 +344,8 @@ auto pfft::ifft2(const Eigen::MatrixBase<Derived>& x, const pocketfft::shape_t& 
 }
 
 template <typename Derived>
-auto pfft::rfft(const Eigen::MatrixBase<Derived>& x, std::optional<size_t> n, size_t axis, Norm norm, size_t nthreads)
+auto pfft::rfft(const MatrixBase<Derived>& x, std::optional<size_t> n, size_t axis, Norm norm, size_t nthreads)
 {
-    using namespace Eigen;
     using R = Derived::Scalar;
     static_assert(!NumTraits<R>::IsComplex, "rfft input must be real");
     static_assert(Derived::IsVectorAtCompileTime, "Expected a 1D array");
@@ -379,7 +370,7 @@ auto pfft::rfft(const Eigen::MatrixBase<Derived>& x, std::optional<size_t> n, si
 }
 
 template <typename Derived>
-auto pfft::irfft(const Eigen::MatrixBase<Derived>& x, std::optional<size_t> n, size_t axis, Norm norm, size_t nthreads)
+auto pfft::irfft(const MatrixBase<Derived>& x, std::optional<size_t> n, size_t axis, Norm norm, size_t nthreads)
 {
     if constexpr (Derived::IsVectorAtCompileTime)
         return core::irfft_vec(x, n, axis, norm, nthreads);

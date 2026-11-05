@@ -28,6 +28,12 @@ namespace pfft
         template <typename Derived>
         auto c2c_2d(const Eigen::MatrixBase<Derived>& x, const std::optional<pocketfft::shape_t>& s,
                     const pocketfft::shape_t& axes, Norm norm, bool forward, size_t nthreads);
+        template <typename Derived>
+        auto irfft_vec(const Eigen::MatrixBase<Derived>& x, std::optional<size_t> n, size_t axis, Norm norm,
+                       size_t nthreads);
+        template <typename Derived>
+        auto irfft_mat(const Eigen::MatrixBase<Derived>& x, std::optional<size_t> n, size_t axis, Norm norm,
+                       size_t nthreads);
     }
 
     template <typename Derived>
@@ -45,6 +51,9 @@ namespace pfft
     template <typename Derived>
     auto rfft(const Eigen::MatrixBase<Derived>& x, std::optional<size_t> n=std::nullopt, size_t axis=0,
               Norm norm=Norm::backward, size_t nthreads=1);
+    template <typename Derived>
+    auto irfft(const Eigen::MatrixBase<Derived>& x, std::optional<size_t>n=std::nullopt,
+               size_t axis=Derived::IsVectorAtCompileTime ? 0:1, Norm norm=Norm::backward, size_t nthreads=1);
 }
 
 
@@ -256,6 +265,59 @@ auto pfft::core::c2c_2d(const Eigen::MatrixBase<Derived>& x, const std::optional
 }
 
 template <typename Derived>
+auto pfft::core::irfft_vec(const Eigen::MatrixBase<Derived>& x, std::optional<size_t> n, size_t axis, Norm norm,
+                           size_t nthreads)
+{
+    using namespace Eigen;
+    using S = Derived::Scalar;  // Can be real or complex
+    using R = NumTraits<S>::Real;
+    if (Derived::IsVectorAtCompileTime && axis != 0)
+        throw std::out_of_range("1D array inputs are not allowed to have axis != 0");
+
+    const size_t m = x.size();
+    const size_t M = n.value_or(m < 2 ? 0 : 2*(m-1));  // Output length
+    if (M == 0)
+        throw std::invalid_argument("Invalid FFT length");
+    const size_t N = M/2 + 1;  // Complex samples needed
+    const R fct = core::scale<R>(norm, M, false);
+
+    InputView1D<Derived, std::complex<R>> in(x, N);
+    Vector<R, Dynamic> out(M);  // Real-valued output
+    const pocketfft::shape_t shape = {M};
+    const pocketfft::shape_t axes = {axis};
+    const pocketfft::stride_t stride_out = {static_cast<std::ptrdiff_t>(sizeof(R))};
+    pocketfft::c2r(shape, {in.stride()}, stride_out, axes, false, in.ptr(), out.data(), fct, nthreads);
+
+    return out;
+}
+
+template <typename Derived>
+auto pfft::core::irfft_mat(const Eigen::MatrixBase<Derived>& x, std::optional<size_t> n, size_t axis, Norm norm,
+                           size_t nthreads)
+{
+    using namespace Eigen;
+    using S = Derived::Scalar;  // Can be real of complex
+    using R = NumTraits<S>::Real;
+    if (axis > 1)
+        throw std::out_of_range("Entries of axes must be 0 or 1");
+
+    const size_t r = x.rows(), c = x.cols();
+    const size_t M = axis == 0 ? n.value_or(r < 2 ? 0 : 2*(r-1)) : r;
+    const size_t N = axis == 1 ? n.value_or(c < 2 ? 0 : 2*(c-1)) : c;
+    Matrix<R, Dynamic, Dynamic> out(M, N);
+
+    if (axis == 0)
+        for (size_t j = 0; j < N; j++)
+            out.col(j) = irfft_vec(x.col(j), n, 0, norm, nthreads);
+    else
+        for (size_t i = 0; i < M; i++)
+            out.row(i) = irfft_vec(x.row(i), n, 0, norm, nthreads);
+
+
+    return out;
+}
+
+template <typename Derived>
 auto pfft::fft(const Eigen::MatrixBase<Derived>& x, std::optional<size_t> n, size_t axis, Norm norm, size_t nthreads)
 {
     return core::c2c_1d(x, n, axis, norm, true, nthreads);
@@ -314,4 +376,15 @@ auto pfft::rfft(const Eigen::MatrixBase<Derived>& x, std::optional<size_t> n, si
     pocketfft::r2c(shape, {in.stride()}, stride_out, axes, true, in.ptr(), out.data(), fct, nthreads);
 
     return out;
+}
+
+template <typename Derived>
+auto pfft::irfft(const Eigen::MatrixBase<Derived>& x, std::optional<size_t> n, size_t axis, Norm norm, size_t nthreads)
+{
+    if constexpr (Derived::IsVectorAtCompileTime)
+        return core::irfft_vec(x, n, axis, norm, nthreads);
+    else if constexpr (Derived::NumDimensions == 2)
+        return core::irfft_mat(x, n, axis, norm, nthreads);
+    else
+        throw std::invalid_argument("Input must be a 1D or 2D array");
 }

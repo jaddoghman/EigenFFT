@@ -194,9 +194,9 @@ template <typename Derived>
 auto pfft::core::c2c_dplct(const MatrixBase<Derived>& x, const std::optional<pocketfft::shape_t>& s,
                            const pocketfft::shape_t& axes, Norm norm, bool forward, size_t nthreads)
 {
-    using T = NumTraits<typename Derived::Scalar>::Real;
-    constexpr auto cplx_sz = static_cast<std::ptrdiff_t>(sizeof(std::complex<T>));
-    Matrix<std::complex<T>, Dynamic, Dynamic> out = x.template cast<std::complex<T>>();
+    using R = NumTraits<typename Derived::Scalar>::Real;
+    constexpr auto cplx_sz = static_cast<std::ptrdiff_t>(sizeof(std::complex<R>));
+    Matrix<std::complex<R>, Dynamic, Dynamic> out = x.template cast<std::complex<R>>();
     for (size_t i = axes.size(); i-- > 0; )
     {
         const size_t cur_ax = axes[i];  // Current axis
@@ -211,7 +211,7 @@ auto pfft::core::c2c_dplct(const MatrixBase<Derived>& x, const std::optional<poc
 
         const pocketfft::shape_t shape = {static_cast<size_t>(out.rows()), static_cast<size_t>(out.cols())};
         const pocketfft::stride_t stride = {cplx_sz, static_cast<std::ptrdiff_t>(out.rows())*cplx_sz};
-        const T fct = scale<T>(norm, new_len, forward);  // Normalization factor
+        const R fct = scale<R>(norm, new_len, forward);  // Normalization factor
         pocketfft::c2c(shape, stride, stride, {cur_ax}, forward, out.data(), out.data(), fct, nthreads);
     }
     return out;
@@ -221,15 +221,14 @@ template <typename Derived>
 auto pfft::core::c2c_2d(const MatrixBase<Derived>& x, const std::optional<pocketfft::shape_t>& s,
                          const pocketfft::shape_t& axes, Norm norm, bool forward, size_t nthreads)
 {
-    using C = Derived::Scalar;
-    using T = NumTraits<C>::Real;
+    using R = NumTraits<typename Derived::Scalar>::Real;
     if (s.has_value() && s->size() != axes.size())
         throw std::invalid_argument("Shape and axes must have same lengths");
     const size_t axes_max = *std::ranges::max_element(axes.begin(), axes.end());
     if (axes_max > 1)
         throw std::out_of_range("Entries of axes must be 0 or 1");
     if ((x.rows() == 1 || x.cols() == 1) && axes_max != 0)
-        throw std::out_of_range("Column/Row matrices do not support non-zero axes entries");
+        throw std::out_of_range("1D array inputs do not support non-zero axes entries");
 
     if (hasDuplicates(axes))
         return core::c2c_dplct(x, s, axes, norm, forward, nthreads);
@@ -246,12 +245,12 @@ auto pfft::core::c2c_2d(const MatrixBase<Derived>& x, const std::optional<pocket
     size_t nfft = 1;  // To normalize along the transformed axis only
     for (const size_t a : axes)
         nfft *= (a == 0 ? M : N);
-    const T fct = scale<T>(norm, nfft, forward);  // Normalization factor
+    const R fct = scale<R>(norm, nfft, forward);  // Normalization factor
 
-    Matrix<std::complex<T>, Dynamic, Dynamic> out(M, N);
-    InputView2D<Derived, std::complex<T>> in(x, M, N);
+    Matrix<std::complex<R>, Dynamic, Dynamic> out(M, N);
+    InputView2D<Derived, std::complex<R>> in(x, M, N);
     const pocketfft::shape_t shape = {M, N};
-    constexpr auto sz = static_cast<std::ptrdiff_t>(sizeof(std::complex<T>));
+    constexpr auto sz = static_cast<std::ptrdiff_t>(sizeof(std::complex<R>));
     const pocketfft::stride_t stride_out = {sz, static_cast<std::ptrdiff_t>(M)*sz};
     pocketfft::c2c(shape, in.stride(), stride_out, axes, forward, in.ptr(), out.data(), fct, nthreads);
 
@@ -304,7 +303,6 @@ auto pfft::core::irfft_mat(const MatrixBase<Derived>& x, std::optional<size_t> n
     else
         for (size_t i = 0; i < M; i++)
             out.row(i) = irfft_vec(x.row(i), n, 0, norm, nthreads);
-
 
     return out;
 }

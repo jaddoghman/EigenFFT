@@ -36,6 +36,9 @@ namespace pfft
         template <typename Derived>
         auto r2c_2d(const MatrixBase<Derived>& x, const std::optional<pocketfft::shape_t>& s, pocketfft::shape_t axes,
                     Norm norm, size_t nthreads);
+        template <typename Derived>
+        auto c2r_2d(const MatrixBase<Derived>& x, const std::optional<pocketfft::shape_t>& s, pocketfft::shape_t axes,
+                    Norm norm, size_t nthreads);
     }
 
     template <typename Derived>
@@ -59,6 +62,9 @@ namespace pfft
     template <typename Derived>
     auto rfft2(const MatrixBase<Derived>& x, const pocketfft::shape_t& s={}, const pocketfft::shape_t& axes={0,1},
                Norm norm=Norm::backward, size_t nthreads=1);
+    template <typename Derived>
+    auto irfft2(const MatrixBase<Derived>& x, const pocketfft::shape_t& s={}, const pocketfft::shape_t& axes={0,1},
+                Norm norm=Norm::backward, size_t nthreads=1);
 }
 
 
@@ -187,7 +193,7 @@ auto pfft::core::c2c_1d(const MatrixBase<Derived>& x, std::optional<size_t> n, s
     const pocketfft::stride_t stride_out = {static_cast<std::ptrdiff_t>(sizeof(std::complex<R>))};
     const R fct = scale<R>(norm, M, forward);
 
-    InputView1D<Derived, std::complex<R>> in(x, M);
+    InputView1D<Derived, std::complex<R>> in(x, M);  // Zero-pad or crop
     pocketfft::c2c(shape, {in.stride()}, stride_out, axes, forward, in.ptr(), out.data(), fct, nthreads);
 
     return out;
@@ -232,7 +238,7 @@ auto pfft::core::r2c_1d(const MatrixBase<Derived>& x, std::optional<size_t> n, s
         throw std::invalid_argument("Invalid FFT length");
     const size_t N = M/2 + 1;  // Output length
 
-    InputView1D<Derived, R> in(x, M);
+    InputView1D<Derived, R> in(x, M);  // Zero-pad or crop
     Vector<std::complex<R>, Dynamic> out(N);  // Complex-valued output
     const pocketfft::shape_t shape = {M};
     const pocketfft::shape_t axes = {axis};
@@ -259,7 +265,7 @@ auto pfft::core::c2r_1d(const MatrixBase<Derived>& x, std::optional<size_t> n, s
     const size_t N = M/2 + 1;  // Complex samples needed
     const R fct = core::scale<R>(norm, M, false);
 
-    InputView1D<Derived, std::complex<R>> in(x, N);
+    InputView1D<Derived, std::complex<R>> in(x, N);  // Zero-pad or crop
     Vector<R, Dynamic> out(M);  // Real-valued output
     const pocketfft::shape_t shape = {M};
     const pocketfft::shape_t axes = {axis};
@@ -312,7 +318,7 @@ auto pfft::core::c2c_2d(const MatrixBase<Derived>& x, const std::optional<pocket
     const R fct = scale<R>(norm, nfft, forward);  // Normalization factor
 
     Matrix<std::complex<R>, Dynamic, Dynamic> out(M, N);
-    InputView2D<Derived, std::complex<R>> in(x, M, N);
+    InputView2D<Derived, std::complex<R>> in(x, M, N);  // Zero-pad or crop
     const pocketfft::shape_t shape = {M, N};
     constexpr auto csz = static_cast<std::ptrdiff_t>(sizeof(std::complex<R>));
     const pocketfft::stride_t stride_out = {csz, static_cast<std::ptrdiff_t>(M)*csz};
@@ -369,11 +375,66 @@ auto pfft::core::r2c_2d(const MatrixBase<Derived>& x, const std::optional<pocket
     const R fct = scale<R>(norm, nfft, true);
 
     Matrix<std::complex<R>, Dynamic, Dynamic> out(M, N);
-    InputView2D<Derived, R> in(x, m, n);
+    InputView2D<Derived, R> in(x, m, n);  // Zero-pad or crop
     constexpr auto csz = static_cast<std::ptrdiff_t>(sizeof(std::complex<R>));
     const pocketfft::shape_t shape = {m, n};
     const pocketfft::stride_t stride_out = {csz, static_cast<std::ptrdiff_t>(M)*csz};
     pocketfft::r2c(shape, in.stride(), stride_out, axes, true, in.ptr(), out.data(), fct, nthreads);
+
+    return out;
+}
+
+template <typename Derived>
+auto pfft::core::c2r_2d(const MatrixBase<Derived>& x, const std::optional<pocketfft::shape_t>& s,
+                        pocketfft::shape_t axes, Norm norm, size_t nthreads)
+{
+    using R = NumTraits<typename Derived::Scalar>::Real;
+    assertConditions(x.rows(), x.cols(), s, axes);
+
+    if (hasDuplicates(axes))
+    {
+        size_t len = s.has_value() ? s->front() : (axes.front() == 0 ? x.rows() : x.cols());
+        Matrix<std::complex<R>, Dynamic, Dynamic> in = ifft(x, len, axes.front(), norm, nthreads);
+
+        for (size_t k = 1; k < axes.size()-1; k++)
+        {
+            const size_t cur_len = axes[k] == 0 ? in.rows() : in.cols();
+            const size_t new_len = s.has_value() ? (*s)[k] : cur_len;
+
+            if (new_len == 0 || cur_len == 0)
+                throw std::invalid_argument("Invalid FFT length");
+
+            in = ifft(in, new_len, axes[k], norm, nthreads);
+        }
+        len = s.has_value() ? s->back() : (axes.back() == 0 ? 2*(x.rows()-1) : 2*(x.cols()-1));
+
+        return irfft(in, len, axes.back(), norm, nthreads);
+    }
+
+    // The remaining case handles unduplicated axes
+    const size_t m = x.rows(), n = x.cols();
+    if (m == 1 && n != 1)  // x is row matrix
+        std::ranges::fill(axes.begin(), axes.end(), 1);
+    size_t M = axes.back() == 0 ? 2*(m-1) : m;
+    size_t N = axes.back() == 1 ? 2*(n-1) : n;
+    if (s.has_value())
+        for (size_t k = 0; k < axes.size(); k++)
+            (axes[k] == 0 ? M : N) = (*s)[k];
+    if (M == 0 || N == 0)
+        throw std::invalid_argument("Invalid FFT length");
+    size_t nfft = 1;  // Normalize along transformed axes only
+    for (const size_t a : axes)
+        nfft *= (a == 0 ? M : N);
+    const R fct = scale<R>(norm, nfft, false);
+
+    Matrix<R, Dynamic, Dynamic> out(M, N);
+    const size_t r = axes.back() == 0 ? M/2+1 : M;
+    const size_t c = axes.back() == 1 ? N/2+1 : N;
+    InputView2D<Derived, std::complex<R>> in(x, r, c);  // Zero-pad or crop
+    constexpr auto rsz = static_cast<std::ptrdiff_t>(sizeof(R));
+    const pocketfft::shape_t shape = {M, N};
+    const pocketfft::stride_t stride_out = {rsz, static_cast<std::ptrdiff_t>(M)*rsz};
+    pocketfft::c2r(shape, in.stride(), stride_out, axes, false, in.ptr(), out.data(), fct, nthreads);
 
     return out;
 }
@@ -501,4 +562,20 @@ auto pfft::rfft2(const MatrixBase<Derived>& x, const pocketfft::shape_t& s, cons
         opt = s;
 
     return core::r2c_2d(x, opt, axes, norm, nthreads);
+}
+
+template <typename Derived>
+auto pfft::irfft2(const MatrixBase<Derived>& x, const pocketfft::shape_t& s, const pocketfft::shape_t& axes, Norm norm,
+                  size_t nthreads)
+{
+    if (axes.empty())
+        throw std::invalid_argument("axes input must not be empty");
+    if (x.rows() == 1 && x.cols() == 1)
+        return Matrix<typename NumTraits<typename Derived::Scalar>::Real, Dynamic, Dynamic>(x.real());
+
+    std::optional<pocketfft::shape_t> opt;
+    if (!s.empty())
+        opt = s;
+
+    return core::c2r_2d(x, opt, axes, norm, nthreads);
 }

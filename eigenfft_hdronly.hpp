@@ -39,6 +39,12 @@ namespace pfft
         template <typename Derived>
         auto c2r_2d(const MatrixBase<Derived>& x, const std::optional<pocketfft::shape_t>& s, pocketfft::shape_t axes,
                     Norm norm, size_t nthreads);
+        template <bool forward, typename Derived>
+        auto dst_1d(const MatrixBase<Derived>& x, size_t type, std::optional<size_t> n, size_t axis, Norm norm,
+                    size_t workers, std::optional<bool> orthogonalize);
+        template <bool forward, typename Derived>
+        auto dst_1d_extrude(const MatrixBase<Derived>& x, size_t type, std::optional<size_t> n, size_t axis, Norm norm,
+                            size_t workers, std::optional<bool> orthogonalize);
     }
 
     template <typename Derived>
@@ -65,6 +71,14 @@ namespace pfft
     template <typename Derived>
     auto irfft2(const MatrixBase<Derived>& x, const pocketfft::shape_t& s={}, const pocketfft::shape_t& axes={0,1},
                 Norm norm=Norm::backward, size_t nthreads=1);
+    template <typename Derived>
+    auto dst(const MatrixBase<Derived>& x, size_t type=2, std::optional<size_t> n=std::nullopt,
+             size_t axis=Derived::IsVectorAtCompileTime ? 0:1, Norm norm=Norm::backward, size_t workers=1,
+             std::optional<bool> orthogonalize=std::nullopt);
+    template <typename Derived>
+    auto idst(const MatrixBase<Derived>& x, size_t type=2, std::optional<size_t> n=std::nullopt,
+              size_t axis=Derived::IsVectorAtCompileTime ? 0:1, Norm norm=Norm::backward, size_t workers=1,
+              std::optional<bool> orthogonalize=std::nullopt);
 }
 
 
@@ -439,6 +453,75 @@ auto pfft::core::c2r_2d(const MatrixBase<Derived>& x, const std::optional<pocket
     return out;
 }
 
+template <bool forward, typename Derived>
+auto pfft::core::dst_1d(const MatrixBase<Derived>& x, size_t type, std::optional<size_t> n, size_t axis, Norm norm,
+                        size_t workers, std::optional<bool> orthogonalize)
+{
+    using S = Derived::Scalar;
+    using R = NumTraits<S>::Real;
+    static_assert(Derived::IsVectorAtCompileTime, "Expected a 1D array");
+    if (type == 0 || type > 4)
+        throw std::invalid_argument("Invalid DST type");
+    if (axis != 0)
+        throw std::out_of_range("1D array inputs are not allowed to have axis != 0");
+
+    if constexpr (NumTraits<S>::IsComplex)  // dst takes in only real inputs
+    {
+        Matrix<R, Dynamic, Dynamic> re = dst_1d<forward>(x.real(), type, n, axis, norm, workers, orthogonalize);
+        Matrix<R, Dynamic, Dynamic> im = dst_1d<forward>(x.imag(), type, n, axis, norm, workers, orthogonalize);
+        Vector<S, Dynamic> out(re.size());
+        out.real() = re;
+        out.imag() = im;
+
+        return out;
+    }
+    else
+    {
+        const size_t m = x.size();
+        const size_t M = n.value_or(m);  // Output size
+        if (M == 0)
+            throw std::invalid_argument("Invalid DST length");
+        const size_t t = forward ? type : (type == 2 ? 3 : type == 3 ? 2 : type);
+        const bool ortho = orthogonalize.value_or(norm == Norm::ortho);
+        const size_t ndst = type == 1 ? 2*(M+1) : 2*M;  // Normalize by DST length
+        const R fct = scale<R>(norm, ndst, forward);
+
+        InputView1D<Derived, R> in(x, M);  // Zero-pad or crop
+        Vector<R, Dynamic> out(M);  // Output follows the input type
+        const pocketfft::shape_t shape = {M};
+        const pocketfft::shape_t axes = {axis};
+        const pocketfft::stride_t stride_out = {static_cast<std::ptrdiff_t>(sizeof(R))};
+        pocketfft::dst(shape, {in.stride()}, stride_out, axes, t, in.ptr(), out.data(), fct, ortho, workers);
+
+        return out;
+    }
+}
+
+template <bool forward, typename Derived>
+auto pfft::core::dst_1d_extrude(const MatrixBase<Derived>& x, size_t type, std::optional<size_t> n, size_t axis,
+                                Norm norm, size_t workers, std::optional<bool> orthogonalize)
+{
+    using S = Derived::Scalar;
+    if (axis > 1)
+        throw std::out_of_range("Entries of axis must be 0 or 1");
+
+    const size_t r = x.rows(), c = x.cols();
+    const size_t M = axis == 0 ? n.value_or(r) : r;
+    const size_t N = axis == 1 ? n.value_or(c) : c;
+    if (M == 0 || N == 0)
+        throw std::invalid_argument("Invalid FFT length");
+
+    Matrix<S, Dynamic, Dynamic> out(M, N);
+    if (axis == 0)
+        for (size_t j = 0; j < N; j++)
+            out.col(j) = core::dst_1d<forward>(x.col(j), type, n, 0, norm, workers, orthogonalize);
+    else
+        for (size_t i = 0; i < M; i++)
+            out.row(i) = core::dst_1d<forward>(x.row(i), type, n, 0, norm, workers, orthogonalize);
+
+    return out;
+}
+
 template <typename Derived>
 auto pfft::fft(const MatrixBase<Derived>& x, std::optional<size_t> n, size_t axis, Norm norm, size_t nthreads)
 {
@@ -578,4 +661,24 @@ auto pfft::irfft2(const MatrixBase<Derived>& x, const pocketfft::shape_t& s, con
         opt = s;
 
     return core::c2r_2d(x, opt, axes, norm, nthreads);
+}
+
+template <typename Derived>
+auto pfft::dst(const MatrixBase<Derived>& x, size_t type, std::optional<size_t> n, size_t axis, Norm norm,
+               size_t workers, std::optional<bool> orthogonalize)
+{
+    if constexpr (Derived::IsVectorAtCompileTime)
+        return core::dst_1d<true>(x, type, n, axis, norm, workers, orthogonalize);
+    else
+        return core::dst_1d_extrude<true>(x, type, n, axis, norm, workers, orthogonalize);
+}
+
+template <typename Derived>
+auto pfft::idst(const MatrixBase<Derived>& x, size_t type, std::optional<size_t> n, size_t axis, Norm norm,
+                size_t workers, std::optional<bool> orthogonalize)
+{
+    if constexpr (Derived::IsVectorAtCompileTime)
+        return core::dst_1d<false>(x, type, n, axis, norm, workers, orthogonalize);
+    else
+        return core::dst_1d_extrude<false>(x, type, n, axis, norm, workers, orthogonalize);
 }

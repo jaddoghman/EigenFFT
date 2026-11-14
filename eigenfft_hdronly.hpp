@@ -19,8 +19,8 @@ namespace pfft
         template <typename T>
         T scale(Norm norm, size_t N, bool forward_dir);
         inline bool hasDuplicates(const pocketfft::shape_t& vec);
-        inline void assertConditions(size_t r, size_t c, const std::optional<pocketfft::shape_t>& s,
-                                     const pocketfft::shape_t& axes);
+        inline void fft2_check(size_t r, size_t c, const std::optional<pocketfft::shape_t>& s,
+                               const pocketfft::shape_t& axes);
         template <bool forward, typename Derived>
         auto c2c_1d(const MatrixBase<Derived>& x, std::optional<size_t> n, size_t axis, Norm norm, size_t nthreads);
         template <bool forward, typename Derived>
@@ -175,8 +175,8 @@ inline bool pfft::core::hasDuplicates(const pocketfft::shape_t& vec)
     return false;
 }
 
-inline void pfft::core::assertConditions(size_t r, size_t c, const std::optional<pocketfft::shape_t>& s,
-                                         const pocketfft::shape_t& axes)
+inline void pfft::core::fft2_check(size_t r, size_t c, const std::optional<pocketfft::shape_t>& s,
+                                   const pocketfft::shape_t& axes)
 {
     if (s.has_value() && s->size() != axes.size())
         throw std::invalid_argument("Shape and axes must have same lengths");
@@ -294,7 +294,7 @@ auto pfft::core::c2c_2d(const MatrixBase<Derived>& x, const std::optional<pocket
                         pocketfft::shape_t axes, Norm norm, size_t nthreads)
 {
     using R = NumTraits<typename Derived::Scalar>::Real;
-    assertConditions(x.rows(), x.cols(), s, axes);
+    fft2_check(x.rows(), x.cols(), s, axes);
 
     if (hasDuplicates(axes))
     {
@@ -347,7 +347,7 @@ auto pfft::core::r2c_2d(const MatrixBase<Derived>& x, const std::optional<pocket
 {
     using R = Derived::Scalar;
     static_assert(!NumTraits<R>::IsComplex, "rfft2 input must be real");
-    assertConditions(x.rows(), x.cols(), s, axes);
+    fft2_check(x.rows(), x.cols(), s, axes);
 
     if (hasDuplicates(axes))
     {
@@ -403,7 +403,7 @@ auto pfft::core::c2r_2d(const MatrixBase<Derived>& x, const std::optional<pocket
                         pocketfft::shape_t axes, Norm norm, size_t nthreads)
 {
     using R = NumTraits<typename Derived::Scalar>::Real;
-    assertConditions(x.rows(), x.cols(), s, axes);
+    fft2_check(x.rows(), x.cols(), s, axes);
 
     if (hasDuplicates(axes))
     {
@@ -467,8 +467,8 @@ auto pfft::core::dst_1d(const MatrixBase<Derived>& x, size_t type, std::optional
 
     if constexpr (NumTraits<S>::IsComplex)  // dst takes in only real inputs
     {
-        Matrix<R, Dynamic, Dynamic> re = dst_1d<forward>(x.real(), type, n, axis, norm, workers, orthogonalize);
-        Matrix<R, Dynamic, Dynamic> im = dst_1d<forward>(x.imag(), type, n, axis, norm, workers, orthogonalize);
+        Vector<R, Dynamic> re = dst_1d<forward>(x.real(), type, n, axis, norm, workers, orthogonalize);
+        Vector<R, Dynamic> im = dst_1d<forward>(x.imag(), type, n, axis, norm, workers, orthogonalize);
         Vector<S, Dynamic> out(re.size());
         out.real() = re;
         out.imag() = im;
@@ -487,7 +487,7 @@ auto pfft::core::dst_1d(const MatrixBase<Derived>& x, size_t type, std::optional
         const R fct = scale<R>(norm, ndst, forward);
 
         InputView1D<Derived, R> in(x, M);  // Zero-pad or crop
-        Vector<R, Dynamic> out(M);  // Output follows the input type
+        Vector<R, Dynamic> out(M);
         const pocketfft::shape_t shape = {M};
         const pocketfft::shape_t axes = {axis};
         const pocketfft::stride_t stride_out = {static_cast<std::ptrdiff_t>(sizeof(R))};
@@ -502,24 +502,45 @@ auto pfft::core::dst_1d_extrude(const MatrixBase<Derived>& x, size_t type, std::
                                 Norm norm, size_t workers, std::optional<bool> orthogonalize)
 {
     using S = Derived::Scalar;
+    using R = NumTraits<S>::Real;
+    if (type == 0 || type > 4)
+        throw std::invalid_argument("Invalid DST type");
     if (axis > 1)
         throw std::out_of_range("Entries of axis must be 0 or 1");
 
-    const size_t r = x.rows(), c = x.cols();
-    const size_t M = axis == 0 ? n.value_or(r) : r;
-    const size_t N = axis == 1 ? n.value_or(c) : c;
-    if (M == 0 || N == 0)
-        throw std::invalid_argument("Invalid FFT length");
+    if constexpr (NumTraits<S>::IsComplex)
+    {
+        Matrix<R, Dynamic, Dynamic> re = dst_1d_extrude<forward>(x.real(), type, n, axis, norm, workers, orthogonalize);
+        Matrix<R, Dynamic, Dynamic> im = dst_1d_extrude<forward>(x.imag(), type, n, axis, norm, workers, orthogonalize);
+        Matrix<S, Dynamic, Dynamic> out(re.rows(), re.cols());
+        out.real() = re;
+        out.imag() = im;
 
-    Matrix<S, Dynamic, Dynamic> out(M, N);
-    if (axis == 0)
-        for (size_t j = 0; j < N; j++)
-            out.col(j) = core::dst_1d<forward>(x.col(j), type, n, 0, norm, workers, orthogonalize);
+        return out;
+    }
     else
-        for (size_t i = 0; i < M; i++)
-            out.row(i) = core::dst_1d<forward>(x.row(i), type, n, 0, norm, workers, orthogonalize);
+    {
+        const size_t r = x.rows(), c = x.cols();
+        const size_t M = axis == 0 ? n.value_or(r) : r;
+        const size_t N = axis == 1 ? n.value_or(c) : c;
+        if (M == 0 || N == 0)
+            throw std::invalid_argument("Invalid DST length");
+        const size_t t = forward ? type : (type == 2 ? 3 : type == 3 ? 2 : type);
+        const bool ortho = orthogonalize.value_or(norm == Norm::ortho);
+        const size_t len = axis == 0 ? M : N;
+        const size_t ndst = type == 1 ? 2*(len+1) : 2*len;  // Normalize along transformed axis only
+        const R fct = scale<R>(norm, ndst, forward);
 
-    return out;
+        InputView2D<Derived, R> in(x, M, N);  // Zero-pad or crop
+        Matrix<R, Dynamic, Dynamic> out(M, N);
+        constexpr auto rsz = static_cast<std::ptrdiff_t>(sizeof(R));
+        const pocketfft::shape_t shape = {M, N};
+        const pocketfft::shape_t axes = {axis};
+        const pocketfft::stride_t stride_out = {out.rowStride()*rsz, out.colStride()*rsz};
+        pocketfft::dst(shape, {in.stride()}, stride_out, axes, t, in.ptr(), out.data(), fct, ortho, workers);
+
+        return out;
+    }
 }
 
 template <typename Derived>

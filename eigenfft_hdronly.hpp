@@ -29,6 +29,9 @@ namespace pfft
         template <typename Derived>
         auto r2c_1d(const MatrixBase<Derived>& x, std::optional<size_t> n, size_t axis, Norm norm, size_t nthreads);
         template <typename Derived>
+        auto r2c_1d_extrude(const MatrixBase<Derived>& x, std::optional<size_t> n, size_t axis, Norm norm,
+                            size_t nthreads);
+        template <typename Derived>
         auto c2r_1d(const MatrixBase<Derived>& x, std::optional<size_t> n, size_t axis, Norm norm, size_t nthreads);
         template <bool forward, typename Derived>
         auto c2c_2d(const MatrixBase<Derived>& x, const std::optional<pocketfft::shape_t>& s, pocketfft::shape_t axes,
@@ -219,7 +222,7 @@ auto pfft::core::c2c_1d_extrude(const MatrixBase<Derived>& x, std::optional<size
     using S = Derived::Scalar;
     using R = NumTraits<S>::Real;
     if (axis > 1)
-        throw std::out_of_range("Entries of axis must be 0 or 1");
+        throw std::out_of_range("axis must be 0 or 1");
 
     const size_t r = x.rows(), c = x.cols();
     const size_t M = axis == 0 ? n.value_or(r) : r;
@@ -249,17 +252,47 @@ auto pfft::core::r2c_1d(const MatrixBase<Derived>& x, std::optional<size_t> n, s
         throw std::out_of_range("1D array inputs are not allowed to have axis != 0");
 
     const size_t m = x.size();
-    const size_t M = n.value_or(m);  // Real transform length
-    if (M == 0)
+    const size_t nfft = n.value_or(m);  // Real transform length
+    if (nfft == 0)
         throw std::invalid_argument("Invalid FFT length");
-    const size_t N = M/2 + 1;  // Output length
+    const size_t M = nfft/2 + 1;  // Output length
+    const R fct = core::scale<R>(norm, nfft, true);  // Normalization factor
 
-    InputView1D<Derived, R> in(x, M);  // Zero-pad or crop
-    Vector<std::complex<R>, Dynamic> out(N);  // Complex-valued output
-    const pocketfft::shape_t shape = {M};
+    InputView1D<Derived, R> in(x, nfft);  // Zero-pad or crop
+    Vector<std::complex<R>, Dynamic> out(M);  // Complex-valued output
+    const pocketfft::shape_t shape = {nfft};
     const pocketfft::shape_t axes = {axis};
     const pocketfft::stride_t stride_out = {static_cast<std::ptrdiff_t>(sizeof(std::complex<R>))};
-    const R fct = core::scale<R>(norm, M, true);  // Normalization factor
+    pocketfft::r2c(shape, {in.stride()}, stride_out, axes, true, in.ptr(), out.data(), fct, nthreads);
+
+    return out;
+}
+
+template <typename Derived>
+auto pfft::core::r2c_1d_extrude(const MatrixBase<Derived>& x, std::optional<size_t> n, size_t axis, Norm norm,
+                                size_t nthreads)
+{
+    using R = Derived::Scalar;
+    static_assert(!NumTraits<R>::IsComplex, "rfft inputs must be real");
+    if (axis > 1)
+        throw std::out_of_range("axis must be 0 or 1");
+
+    const size_t r = x.rows(), c = x.cols();
+    const size_t M_fft = axis == 0 ? n.value_or(r) : r;  // Real transform length along axis 0
+    const size_t N_fft = axis == 1 ? n.value_or(c) : c;  // Real transform length along axis 1
+    if (M_fft == 0 || N_fft == 0)
+        throw std::invalid_argument("Invalid FFT length");
+    const size_t M = axis == 0 ? M_fft/2 + 1 : M_fft;
+    const size_t N = axis == 1 ? N_fft/2 + 1 : N_fft;
+    const size_t nfft = axis == 0 ? M_fft : N_fft;  // Normalize along transformed axis only
+    const R fct = scale<R>(norm, nfft, true);
+
+    InputView2D<Derived, R> in(x, M_fft, N_fft);  // Zero-pad or crop
+    Matrix<std::complex<R>, Dynamic, Dynamic> out(M, N);
+    constexpr auto csz = static_cast<std::ptrdiff_t>(sizeof(std::complex<R>));
+    const pocketfft::shape_t shape = {M_fft, N_fft};
+    const pocketfft::shape_t axes = {axis};
+    const pocketfft::stride_t stride_out = {out.rowStride()*csz, out.colStride()*csz};
     pocketfft::r2c(shape, {in.stride()}, stride_out, axes, true, in.ptr(), out.data(), fct, nthreads);
 
     return out;
@@ -569,28 +602,7 @@ auto pfft::rfft(const MatrixBase<Derived>& x, std::optional<size_t> n, size_t ax
     if constexpr (Derived::IsVectorAtCompileTime)
         return core::r2c_1d(x, n, axis, norm, nthreads);
     else
-    {
-        using R = Derived::Scalar;
-        static_assert(!NumTraits<R>::IsComplex, "rfft inputs must be real");
-        if (axis > 1)
-            throw std::out_of_range("Entries of axis must be 0 or 1");
-
-        const size_t r = x.rows(), c = x.cols();
-        const size_t M = axis == 0 ? n.value_or(r)/2+1 : r;
-        const size_t N = axis == 1 ? n.value_or(c)/2+1 : c;
-        if (M == 0 || N == 0)
-            throw std::invalid_argument("Invalid FFT length");
-
-        Matrix<std::complex<R>, Dynamic, Dynamic> out(M, N);
-        if (axis == 0)
-            for (size_t j = 0; j < N; j++)
-                out.col(j) = core::r2c_1d(x.col(j), n, 0, norm, nthreads);
-        else
-            for (size_t i = 0; i < M; i++)
-                out.row(i) = core::r2c_1d(x.row(i), n, 0, norm, nthreads);
-
-        return out;
-    }
+        return core::r2c_1d_extrude(x, n, axis, norm, nthreads);
 }
 
 template <typename Derived>

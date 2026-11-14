@@ -190,8 +190,8 @@ inline void pfft::core::fft2_check(size_t r, size_t c, const std::optional<pocke
 template <bool forward, typename Derived>
 auto pfft::core::c2c_1d(const MatrixBase<Derived>& x, std::optional<size_t> n, size_t axis, Norm norm, size_t nthreads)
 {
-    using C = Derived::Scalar;
-    using R = NumTraits<C>::Real;
+    using S = Derived::Scalar;
+    using R = NumTraits<S>::Real;
     static_assert(Derived::IsVectorAtCompileTime, "Expected a 1D array");
     if (axis != 0)
         throw std::invalid_argument("1D array inputs are not allowed to have axis != 0");
@@ -201,13 +201,12 @@ auto pfft::core::c2c_1d(const MatrixBase<Derived>& x, std::optional<size_t> n, s
     if (M == 0)
         throw std::invalid_argument("Invalid FFT length");
 
+    InputView1D<Derived, std::complex<R>> in(x, M);  // Zero-pad or crop
     Vector<std::complex<R>, Dynamic> out(M);  // Output is always complex-valued
     const pocketfft::shape_t shape = {M};
     const pocketfft::shape_t axes = {axis};
     const pocketfft::stride_t stride_out = {static_cast<std::ptrdiff_t>(sizeof(std::complex<R>))};
     const R fct = scale<R>(norm, M, forward);
-
-    InputView1D<Derived, std::complex<R>> in(x, M);  // Zero-pad or crop
     pocketfft::c2c(shape, {in.stride()}, stride_out, axes, forward, in.ptr(), out.data(), fct, nthreads);
 
     return out;
@@ -217,7 +216,8 @@ template <bool forward, typename Derived>
 auto pfft::core::c2c_1d_extrude(const MatrixBase<Derived>& x, std::optional<size_t> n, size_t axis, Norm norm,
                                 size_t nthreads)
 {
-    using R = NumTraits<typename Derived::Scalar>::Real;
+    using S = Derived::Scalar;
+    using R = NumTraits<S>::Real;
     if (axis > 1)
         throw std::out_of_range("Entries of axis must be 0 or 1");
 
@@ -226,14 +226,16 @@ auto pfft::core::c2c_1d_extrude(const MatrixBase<Derived>& x, std::optional<size
     const size_t N = axis == 1 ? n.value_or(c) : c;
     if (M == 0 || N == 0)
         throw std::invalid_argument("Invalid FFT length");
+    const size_t nfft = axis == 0 ? M : N;
+    const R fct = scale<R>(norm, nfft, forward);
 
+    InputView2D<Derived, std::complex<R>> in(x, M, N);  // Zero-pad or crop
     Matrix<std::complex<R>, Dynamic, Dynamic> out(M, N);
-    if (axis == 0)
-        for (size_t j = 0; j < N; j++)
-            out.col(j) = core::c2c_1d<forward>(x.col(j), n, 0, norm, nthreads);
-    else
-        for (size_t i = 0; i < M; i++)
-            out.row(i) = core::c2c_1d<forward>(x.row(i), n, 0, norm, nthreads);
+    constexpr auto csz = static_cast<std::ptrdiff_t>(sizeof(std::complex<R>));
+    const pocketfft::shape_t shape = {M, N};
+    const pocketfft::shape_t axes = {axis};
+    const pocketfft::stride_t stride_out = {out.rowStride()*csz, out.colStride()*csz};
+    pocketfft::c2c(shape, {in.stride()}, stride_out, axes, forward, in.ptr(), out.data(), fct, nthreads);
 
     return out;
 }

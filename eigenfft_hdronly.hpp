@@ -33,6 +33,9 @@ namespace pfft
                             size_t nthreads);
         template <typename Derived>
         auto c2r_1d(const MatrixBase<Derived>& x, std::optional<size_t> n, size_t axis, Norm norm, size_t nthreads);
+        template <typename Derived>
+        auto c2r_1d_extrude(const MatrixBase<Derived>& x, std::optional<size_t> n, size_t axis, Norm norm,
+                            size_t nthreads);
         template <bool forward, typename Derived>
         auto c2c_2d(const MatrixBase<Derived>& x, const std::optional<pocketfft::shape_t>& s, pocketfft::shape_t axes,
                     Norm norm, size_t nthreads);
@@ -238,7 +241,7 @@ auto pfft::core::c2c_1d_extrude(const MatrixBase<Derived>& x, std::optional<size
     const pocketfft::shape_t shape = {M, N};
     const pocketfft::shape_t axes = {axis};
     const pocketfft::stride_t stride_out = {out.rowStride()*csz, out.colStride()*csz};
-    pocketfft::c2c(shape, {in.stride()}, stride_out, axes, forward, in.ptr(), out.data(), fct, nthreads);
+    pocketfft::c2c(shape, in.stride(), stride_out, axes, forward, in.ptr(), out.data(), fct, nthreads);
 
     return out;
 }
@@ -293,7 +296,7 @@ auto pfft::core::r2c_1d_extrude(const MatrixBase<Derived>& x, std::optional<size
     const pocketfft::shape_t shape = {M_fft, N_fft};
     const pocketfft::shape_t axes = {axis};
     const pocketfft::stride_t stride_out = {out.rowStride()*csz, out.colStride()*csz};
-    pocketfft::r2c(shape, {in.stride()}, stride_out, axes, true, in.ptr(), out.data(), fct, nthreads);
+    pocketfft::r2c(shape, in.stride(), stride_out, axes, true, in.ptr(), out.data(), fct, nthreads);
 
     return out;
 }
@@ -320,6 +323,36 @@ auto pfft::core::c2r_1d(const MatrixBase<Derived>& x, std::optional<size_t> n, s
     const pocketfft::shape_t axes = {axis};
     const pocketfft::stride_t stride_out = {static_cast<std::ptrdiff_t>(sizeof(R))};
     pocketfft::c2r(shape, {in.stride()}, stride_out, axes, false, in.ptr(), out.data(), fct, nthreads);
+
+    return out;
+}
+
+template <typename Derived>
+auto pfft::core::c2r_1d_extrude(const MatrixBase<Derived>& x, std::optional<size_t> n, size_t axis, Norm norm,
+                                size_t nthreads)
+{
+    using S = Derived::Scalar;
+    using R = NumTraits<S>::Real;
+    if (axis > 1)
+        throw std::out_of_range("axis must be 0 or 1");
+
+    const size_t r = x.rows(), c = x.cols();
+    const size_t M = axis == 0 ? n.value_or(r < 2 ? 0 : 2*(r-1)) : r;
+    const size_t N = axis == 1 ? n.value_or(c < 2 ? 0 : 2*(c-1)) : c;
+    if (M == 0 || N == 0)
+        throw std::invalid_argument("Invalid FFT length");
+    const size_t M_fft = axis == 0 ? M/2+1 : M;  // Complex samples needed along axis 0
+    const size_t N_fft = axis == 1 ? N/2+1 : N;  // Complex samples needed along axis 1
+    const size_t nfft = axis == 0 ? M : N;  // Normalize along transformed axis only
+    const R fct = scale<R>(norm, nfft, false);
+
+    InputView2D<Derived, std::complex<R>> in(x, M_fft, N_fft);  // Zero-pad or crop
+    Matrix<R, Dynamic, Dynamic> out(M, N);
+    constexpr auto rsz = static_cast<std::ptrdiff_t>(sizeof(R));
+    const pocketfft::shape_t shape = {M, N};
+    const pocketfft::shape_t axes = {axis};
+    const pocketfft::stride_t stride_out = {out.rowStride()*rsz, out.colStride()*rsz};
+    pocketfft::c2r(shape, in.stride(), stride_out, axes, false, in.ptr(), out.data(), fct, nthreads);
 
     return out;
 }
@@ -611,27 +644,7 @@ auto pfft::irfft(const MatrixBase<Derived>& x, std::optional<size_t> n, size_t a
     if constexpr (Derived::IsVectorAtCompileTime)
         return core::c2r_1d(x, n, axis, norm, nthreads);
     else
-    {
-        using R = NumTraits<typename Derived::Scalar>::Real;
-        if (axis > 1)
-            throw std::out_of_range("Entries of axis must be 0 or 1");
-
-        const size_t r = x.rows(), c = x.cols();
-        const size_t M = axis == 0 ? n.value_or(r < 2 ? 0 : 2*(r-1)) : r;
-        const size_t N = axis == 1 ? n.value_or(c < 2 ? 0 : 2*(c-1)) : c;
-        if (M == 0 || N == 0)
-            throw std::invalid_argument("Invalid FFT length");
-
-        Matrix<R, Dynamic, Dynamic> out(M, N);
-        if (axis == 0)
-            for (size_t j = 0; j < N; j++)
-                out.col(j) = core::c2r_1d(x.col(j), n, 0, norm, nthreads);
-        else
-            for (size_t i = 0; i < M; i++)
-                out.row(i) = core::c2r_1d(x.row(i), n, 0, norm, nthreads);
-
-        return out;
-    }
+        return core::c2r_1d_extrude(x, n, axis, norm, nthreads);
 }
 
 template <typename Derived>

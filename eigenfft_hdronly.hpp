@@ -51,6 +51,12 @@ namespace pfft
         template <bool forward, typename Derived>
         auto dst_1d_extrude(const MatrixBase<Derived>& x, size_t type, std::optional<size_t> n, size_t axis, Norm norm,
                             size_t workers, std::optional<bool> orthogonalize);
+        template <bool forward, typename Derived>
+        auto dct_1d(const MatrixBase<Derived>& x, size_t type, std::optional<size_t> n, size_t axis, Norm norm,
+                    size_t workers, std::optional<bool> orthogonalize);
+        template <bool forward, typename Derived>
+        auto dct_1d_extrude(const MatrixBase<Derived>& x, size_t type, std::optional<size_t> n, size_t axis, Norm norm,
+                            size_t workers, std::optional<bool> orthogonalize);
     }
 
     template <typename Derived>
@@ -83,6 +89,14 @@ namespace pfft
              std::optional<bool> orthogonalize=std::nullopt);
     template <typename Derived>
     auto idst(const MatrixBase<Derived>& x, size_t type=2, std::optional<size_t> n=std::nullopt,
+              size_t axis=Derived::IsVectorAtCompileTime ? 0:1, Norm norm=Norm::backward, size_t workers=1,
+              std::optional<bool> orthogonalize=std::nullopt);
+    template <typename Derived>
+    auto dct(const MatrixBase<Derived>& x, size_t type=2, std::optional<size_t> n=std::nullopt,
+             size_t axis=Derived::IsVectorAtCompileTime ? 0:1, Norm norm=Norm::backward, size_t workers=1,
+             std::optional<bool> orthogonalize=std::nullopt);
+    template <typename Derived>
+    auto idct(const MatrixBase<Derived>& x, size_t type=2, std::optional<size_t> n=std::nullopt,
               size_t axis=Derived::IsVectorAtCompileTime ? 0:1, Norm norm=Norm::backward, size_t workers=1,
               std::optional<bool> orthogonalize=std::nullopt);
 }
@@ -200,7 +214,7 @@ auto pfft::core::c2c_1d(const MatrixBase<Derived>& x, std::optional<size_t> n, s
     using R = NumTraits<S>::Real;
     static_assert(Derived::IsVectorAtCompileTime, "Expected a 1D array");
     if (axis != 0)
-        throw std::invalid_argument("1D array inputs are not allowed to have axis != 0");
+        throw std::invalid_argument("1D array inputs must not have axis != 0");
 
     const size_t m = x.size();
     const size_t M = n.value_or(m);
@@ -252,7 +266,7 @@ auto pfft::core::r2c_1d(const MatrixBase<Derived>& x, std::optional<size_t> n, s
     using R = Derived::Scalar;
     static_assert(!NumTraits<R>::IsComplex, "rfft inputs must be real");
     if (axis != 0)
-        throw std::out_of_range("1D array inputs are not allowed to have axis != 0");
+        throw std::out_of_range("1D array inputs must not have axis != 0");
 
     const size_t m = x.size();
     const size_t nfft = n.value_or(m);  // Real transform length
@@ -308,7 +322,7 @@ auto pfft::core::c2r_1d(const MatrixBase<Derived>& x, std::optional<size_t> n, s
     using R = NumTraits<S>::Real;
     static_assert(Derived::IsVectorAtCompileTime, "Expected a 1D array");
     if (axis != 0)
-        throw std::out_of_range("1D array inputs are not allowed to have axis != 0");
+        throw std::out_of_range("1D array inputs must not have axis != 0");
 
     const size_t m = x.size();
     const size_t M = n.value_or(m < 2 ? 0 : 2*(m-1));  // Output length
@@ -531,7 +545,7 @@ auto pfft::core::dst_1d(const MatrixBase<Derived>& x, size_t type, std::optional
     if (type == 0 || type > 4)
         throw std::invalid_argument("Invalid DST type");
     if (axis != 0)
-        throw std::out_of_range("1D array inputs are not allowed to have axis != 0");
+        throw std::out_of_range("1D array inputs must not have axis != 0");
 
     if constexpr (NumTraits<S>::IsComplex)  // dst takes in only real inputs
     {
@@ -576,7 +590,7 @@ auto pfft::core::dst_1d_extrude(const MatrixBase<Derived>& x, size_t type, std::
     if (axis > 1)
         throw std::out_of_range("Entries of axis must be 0 or 1");
 
-    if constexpr (NumTraits<S>::IsComplex)
+    if constexpr (NumTraits<S>::IsComplex)  // dst takes in only real inputs
     {
         Matrix<R, Dynamic, Dynamic> re = dst_1d_extrude<forward>(x.real(), type, n, axis, norm, workers, orthogonalize);
         Matrix<R, Dynamic, Dynamic> im = dst_1d_extrude<forward>(x.imag(), type, n, axis, norm, workers, orthogonalize);
@@ -606,6 +620,100 @@ auto pfft::core::dst_1d_extrude(const MatrixBase<Derived>& x, size_t type, std::
         const pocketfft::shape_t axes = {axis};
         const pocketfft::stride_t stride_out = {out.rowStride()*rsz, out.colStride()*rsz};
         pocketfft::dst(shape, {in.stride()}, stride_out, axes, t, in.ptr(), out.data(), fct, ortho, workers);
+
+        return out;
+    }
+}
+
+template <bool forward, typename Derived>
+auto pfft::core::dct_1d(const MatrixBase<Derived>& x, size_t type, std::optional<size_t> n, size_t axis, Norm norm,
+                        size_t workers, std::optional<bool> orthogonalize)
+{
+    using S = Derived::Scalar;
+    using R = NumTraits<S>::Real;
+    static_assert(Derived::IsVectorAtCompileTime, "Expected a 1D array");
+    if (type == 0 || type > 4)
+        throw std::invalid_argument("Invalid DCT type");
+    if (axis != 0)
+        throw std::out_of_range("1D array inputs must not have axis != 0");
+
+    if constexpr (NumTraits<S>::IsComplex)  // dct takes in only real inputs
+    {
+        Vector<R, Dynamic> re = dct_1d<forward>(x.real(), type, n, axis, norm, workers, orthogonalize);
+        Vector<R, Dynamic> im = dct_1d<forward>(x.imag(), type, n, axis, norm, workers, orthogonalize);
+        Vector<S, Dynamic> out(re.size());
+        out.real() = re;
+        out.imag() = im;
+
+        return out;
+    }
+    else
+    {
+        const size_t m = x.size();
+        const size_t M = n.value_or(m);  // Output size
+        if (M == 0)
+            throw std::invalid_argument("Invalid DCT length");
+        if (type == 1 && M < 2)
+            throw std::invalid_argument("DCT-I requires at least 2 data points");
+        const size_t t = forward ? type : (type == 2 ? 3 : type == 3 ? 2 : type);
+        const bool ortho = orthogonalize.value_or(norm == Norm::ortho);
+        const size_t ndct = type == 1 ? 2*(M-1) : 2*M;  // Normalize by DCT length
+        const R fct = scale<R>(norm, ndct, forward);
+
+        InputView1D<Derived, R> in(x, M);  // Zero-pad or crop
+        Vector<R, Dynamic> out(M);
+        const pocketfft::shape_t shape = {M};
+        const pocketfft::shape_t axes = {axis};
+        const pocketfft::stride_t stride_out = {static_cast<std::ptrdiff_t>(sizeof(R))};
+        pocketfft::dct(shape, {in.stride()}, stride_out, axes, t, in.ptr(), out.data(), fct, ortho, workers);
+
+        return out;
+    }
+}
+
+template <bool forward, typename Derived>
+auto pfft::core::dct_1d_extrude(const MatrixBase<Derived>& x, size_t type, std::optional<size_t> n, size_t axis,
+                                Norm norm, size_t workers, std::optional<bool> orthogonalize)
+{
+    using S = Derived::Scalar;
+    using R = NumTraits<S>::Real;
+    if (type == 0 || type > 4)
+        throw std::invalid_argument("Invalid DCT type");
+    if (axis > 1)
+        throw std::out_of_range("axis must be 0 or 1");
+
+    if constexpr (NumTraits<S>::IsComplex)
+    {
+        Matrix<R, Dynamic, Dynamic> re = dct_1d_extrude<forward>(x.real(), type, n, axis, norm, workers, orthogonalize);
+        Matrix<R, Dynamic, Dynamic> im = dct_1d_extrude<forward>(x.imag(), type, n, axis, norm, workers, orthogonalize);
+        Matrix<S, Dynamic, Dynamic> out(re.rows(), re.cols());
+        out.real() = re;
+        out.imag() = im;
+
+        return out;
+    }
+    else
+    {
+        const size_t r = x.rows(), c = x.cols();
+        const size_t M = axis == 0 ? n.value_or(r) : r;
+        const size_t N = axis == 1 ? n.value_or(c) : c;
+        if (M == 0 || N == 0)
+            throw std::invalid_argument("Invalid DCT length");
+        const size_t len = axis == 0 ? M : N;
+        if (type == 1 && len < 2)
+            throw std::out_of_range("DCT-I requires at least 2 data points");
+        const size_t t = forward ? type : (type == 2 ? 3 : type == 3 ? 2 : type);
+        const bool ortho = orthogonalize.value_or(norm == Norm::ortho);
+        const size_t ndct = type == 1 ? 2*(len-1) : 2*len;  // Normalize by DCT length
+        const R fct = scale<R>(norm, ndct, forward);
+
+        InputView2D<Derived, R> in(x, M, N);  // Zero-pad or crop
+        Matrix<R, Dynamic, Dynamic> out(M, N);
+        constexpr auto rsz = static_cast<std::ptrdiff_t>(sizeof(R));
+        const pocketfft::shape_t shape = {M, N};
+        const pocketfft::shape_t axes = {axis};
+        const pocketfft::stride_t stride_out = {out.rowStride()*rsz, out.colStride()*rsz};
+        pocketfft::dct(shape, in.stride(), stride_out, axes, t, in.ptr(), out.data(), fct, ortho, workers);
 
         return out;
     }
@@ -729,4 +837,24 @@ auto pfft::idst(const MatrixBase<Derived>& x, size_t type, std::optional<size_t>
         return core::dst_1d<false>(x, type, n, axis, norm, workers, orthogonalize);
     else
         return core::dst_1d_extrude<false>(x, type, n, axis, norm, workers, orthogonalize);
+}
+
+template <typename Derived>
+auto pfft::dct(const MatrixBase<Derived>& x, size_t type, std::optional<size_t> n, size_t axis, Norm norm,
+               size_t workers, std::optional<bool> orthogonalize)
+{
+    if constexpr (Derived::IsVectorAtCompileTime)
+        return core::dct_1d<true>(x, type, n, axis, norm, workers, orthogonalize);
+    else
+        return core::dct_1d_extrude<true>(x, type, n, axis, norm, workers, orthogonalize);
+}
+
+template <typename Derived>
+auto pfft::idct(const MatrixBase<Derived>& x, size_t type, std::optional<size_t> n, size_t axis, Norm norm,
+                size_t workers, std::optional<bool> orthogonalize)
+{
+    if constexpr (Derived::IsVectorAtCompileTime)
+        return core::dct_1d<false>(x, type, n, axis, norm, workers, orthogonalize);
+    else
+        return core::dct_1d_extrude<false>(x, type, n, axis, norm, workers, orthogonalize);
 }

@@ -60,9 +60,9 @@ namespace pfft
         auto dct_1d_extrude(const MatrixBase<Derived>& x, size_t type, std::optional<size_t> n, size_t axis, Norm norm,
                             size_t workers, std::optional<bool> orthogonalize);
         template <bool forward, typename Derived>
-        auto dstn(const MatrixBase<Derived>& x, size_t type, const std::optional<pocketfft::shape_t>& s,
-                  const std::optional<pocketfft::shape_t>& axes, Norm norm, size_t workers,
-                  std::optional<bool> orthogonalize);
+        auto dstn_2d(const MatrixBase<Derived>& x, size_t type, const std::optional<pocketfft::shape_t>& s,
+                     const std::optional<pocketfft::shape_t>& axes, Norm norm, size_t workers,
+                     std::optional<bool> orthogonalize);
     }
 
     template <typename Derived>
@@ -757,9 +757,9 @@ auto pfft::core::dct_1d_extrude(const MatrixBase<Derived>& x, size_t type, std::
 }
 
 template <bool forward, typename Derived>
-auto pfft::core::dstn(const MatrixBase<Derived>& x, size_t type, const std::optional<pocketfft::shape_t>& s,
-                      const std::optional<pocketfft::shape_t>& axes, Norm norm, size_t workers,
-                      std::optional<bool> orthogonalize)
+auto pfft::core::dstn_2d(const MatrixBase<Derived>& x, size_t type, const std::optional<pocketfft::shape_t>& s,
+                         const std::optional<pocketfft::shape_t>& axes, Norm norm, size_t workers,
+                         std::optional<bool> orthogonalize)
 {
     using S = Derived::Scalar;
     using R = NumTraits<S>::Real;
@@ -767,8 +767,8 @@ auto pfft::core::dstn(const MatrixBase<Derived>& x, size_t type, const std::opti
 
     if constexpr (NumTraits<S>::IsComplex)
     {
-        Matrix<R, Dynamic, Dynamic> re = dstn<forward>(x.real(), type, s, axes, norm, workers, orthogonalize);
-        Matrix<R, Dynamic, Dynamic> im = dstn<forward>(x.imag(), type, s, axes, norm, workers, orthogonalize);
+        Matrix<R, Dynamic, Dynamic> re = dstn_2d<forward>(x.real(), type, s, axes, norm, workers, orthogonalize);
+        Matrix<R, Dynamic, Dynamic> im = dstn_2d<forward>(x.imag(), type, s, axes, norm, workers, orthogonalize);
         Matrix<S, Dynamic, Dynamic> out(re.rows(), re.cols());
         out.real() = re;
         out.imag() = im;
@@ -970,7 +970,7 @@ auto pfft::dstn(const MatrixBase<Derived>& x, size_t type, const pocketfft::shap
     if (!axes.empty())
         axes_opt = axes;
 
-    return core::dstn<true>(x, type, s_opt, axes_opt, norm, workers, orthogonalize);
+    return core::dstn_2d<true>(x, type, s_opt, axes_opt, norm, workers, orthogonalize);
 }
 
 template <typename Derived>
@@ -983,5 +983,5 @@ auto pfft::idstn(const MatrixBase<Derived>& x, size_t type, const pocketfft::sha
     if (!axes.empty())
         axes_opt = axes;
 
-    return core::dstn<false>(x, type, s_opt, axes_opt, norm, workers, orthogonalize);
+    return core::dstn_2d<false>(x, type, s_opt, axes_opt, norm, workers, orthogonalize);
 }

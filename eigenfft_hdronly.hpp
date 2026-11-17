@@ -66,6 +66,10 @@ namespace pfft
         auto dstn_2d(const MatrixBase<Derived>& x, size_t type, const std::optional<pocketfft::shape_t>& s,
                      const std::optional<pocketfft::shape_t>& axes, Norm norm, size_t workers,
                      std::optional<bool> orthogonalize);
+        template <bool forward, typename Derived>
+        auto dctn_2d(const MatrixBase<Derived>& x, size_t type, const std::optional<pocketfft::shape_t>& s,
+                     const std::optional<pocketfft::shape_t>& axes, Norm norm, size_t workers,
+                     std::optional<bool> orthogonalize);
     }
 
     template <typename Derived>
@@ -114,6 +118,14 @@ namespace pfft
               std::optional<bool> orthogonalize=std::nullopt);
     template <typename Derived>
     auto idstn(const MatrixBase<Derived>& x, size_t type=2, const pocketfft::shape_t& s={},
+               const pocketfft::shape_t& axes={}, Norm norm=Norm::backward, size_t workers=1,
+               std::optional<bool> orthogonalize=std::nullopt);
+    template <typename Derived>
+    auto dctn(const MatrixBase<Derived>& x, size_t type=2, const pocketfft::shape_t& s={},
+              const pocketfft::shape_t& axes={}, Norm norm=Norm::backward, size_t workers=1,
+              std::optional<bool> orthogonalize=std::nullopt);
+    template <typename Derived>
+    auto idctn(const MatrixBase<Derived>& x, size_t type=2, const pocketfft::shape_t& s={},
                const pocketfft::shape_t& axes={}, Norm norm=Norm::backward, size_t workers=1,
                std::optional<bool> orthogonalize=std::nullopt);
 }
@@ -790,7 +802,8 @@ auto pfft::core::dstn_2d(const MatrixBase<Derived>& x, size_t type, const std::o
 {
     using S = Derived::Scalar;
     using R = NumTraits<S>::Real;
-    dstn_dctn_check(Derived::NumDimensions, type, s, axes, true);
+    constexpr size_t dim = Derived::IsVectorAtCompileTime ? 1 : 2;
+    dstn_dctn_check(dim, type, s, axes, true);
 
     if constexpr (NumTraits<S>::IsComplex)
     {
@@ -826,6 +839,59 @@ auto pfft::core::dstn_2d(const MatrixBase<Derived>& x, size_t type, const std::o
         const pocketfft::shape_t shape = {M, N};
         const pocketfft::stride_t stride_out = {out.rowStride()*rsz, out.colStride()*rsz};
         pocketfft::dst(shape, in.stride(), stride_out, axes_in, t, in.ptr(), out.data(), fct, ortho, workers);
+
+        return out;
+    }
+}
+
+template <bool forward, typename Derived>
+auto pfft::core::dctn_2d(const MatrixBase<Derived>& x, size_t type, const std::optional<pocketfft::shape_t>& s,
+                         const std::optional<pocketfft::shape_t>& axes, Norm norm, size_t workers,
+                         std::optional<bool> orthogonalize)
+{
+    using S = Derived::Scalar;
+    using R = NumTraits<S>::Real;
+    constexpr size_t dim = Derived::IsVectorAtCompileTime ? 1 : 2;
+    dstn_dctn_check(dim, type, s, axes, false);
+
+    if constexpr (NumTraits<S>::IsComplex)
+    {
+        Matrix<R, Dynamic, Dynamic> re = dctn_2d<forward>(x.real(), type, s, axes, norm, workers, orthogonalize);
+        Matrix<R, Dynamic, Dynamic> im = dctn_2d<forward>(x.imag(), type, s, axes, norm, workers, orthogonalize);
+        Matrix<S, Dynamic, Dynamic> out(re.rows(), re.cols());
+        out.real() = re;
+        out.imag() = im;
+
+        return out;
+    }
+    else
+    {
+        const pocketfft::shape_t axes_in = resolve_axes<Derived>(axes, s);
+        size_t M = x.rows(), N = x.cols();
+        if (s.has_value())
+            for (size_t k = 0; k < s->size(); k++)
+                (axes_in[k] == 0 ? M : N) = s->at(k);
+        if (M == 0 || N == 0)
+            throw std::invalid_argument("Invalid DCT length");
+        if (type == 1)
+            for (const size_t a : axes_in)
+                if ((a == 0 ? M : N) < 2)
+                    throw std::invalid_argument("DCT-I requires at least 2 data points");
+        const size_t t = forward ? type : (type == 2 ? 3 : type == 3 ? 2 : type);
+        const bool ortho = orthogonalize.value_or(norm == Norm::ortho);
+        const size_t M_dct = type == 1 ? 2*(M-1) : 2*M;
+        const size_t N_dct = type == 1 ? 2*(N-1) : 2*N;
+        size_t ndct = 1;  // Normalize along transformed axes only
+        for (const size_t a : axes_in)
+            ndct *= (a == 0 ? M_dct : N_dct);
+        const R fct = scale<R>(norm, ndct, forward);
+
+        InputView2D<Derived, R> in(x, M, N);
+        Matrix<R, Dynamic, Dynamic> out(M, N);
+        constexpr auto rsz = static_cast<std::ptrdiff_t>(sizeof(R));
+        const pocketfft::shape_t shape = {M, N};
+        const pocketfft::stride_t stride_out = {out.rowStride()*rsz, out.colStride()*rsz};
+        pocketfft::dct(shape, in.stride(), stride_out, axes_in, t, in.ptr(), out.data(), fct, ortho, workers);
 
         return out;
     }
@@ -995,4 +1061,30 @@ auto pfft::idstn(const MatrixBase<Derived>& x, size_t type, const pocketfft::sha
         axes_opt = axes;
 
     return core::dstn_2d<false>(x, type, s_opt, axes_opt, norm, workers, orthogonalize);
+}
+
+template <typename Derived>
+auto pfft::dctn(const MatrixBase<Derived>& x, size_t type, const pocketfft::shape_t& s, const pocketfft::shape_t& axes,
+                Norm norm, size_t workers, std::optional<bool> orthogonalize)
+{
+    std::optional<pocketfft::shape_t> s_opt, axes_opt;
+    if (!s.empty())
+        s_opt = s;
+    if (!axes.empty())
+        axes_opt = axes;
+
+    return core::dctn_2d<true>(x, type, s_opt, axes_opt, norm, workers, orthogonalize);
+}
+
+template <typename Derived>
+auto pfft::idctn(const MatrixBase<Derived>& x, size_t type, const pocketfft::shape_t& s, const pocketfft::shape_t& axes,
+                 Norm norm, size_t workers, std::optional<bool> orthogonalize)
+{
+    std::optional<pocketfft::shape_t> s_opt, axes_opt;
+    if (!s.empty())
+        s_opt = s;
+    if (!axes.empty())
+        axes_opt = axes;
+
+    return core::dctn_2d<false>(x, type, s_opt, axes_opt, norm, workers, orthogonalize);
 }

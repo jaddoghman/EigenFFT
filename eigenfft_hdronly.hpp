@@ -21,6 +21,8 @@ namespace pfft
         inline bool hasDuplicates(const pocketfft::shape_t& vec);
         inline void fft2_check(size_t r, size_t c, const std::optional<pocketfft::shape_t>& s,
                                const pocketfft::shape_t& axes);
+        inline void dstn_dctn_check(size_t dim, size_t type, const std::optional<pocketfft::shape_t>& s,
+                                    const std::optional<pocketfft::shape_t>& axes, bool dst);
         template <bool forward, typename Derived>
         auto c2c_1d(const MatrixBase<Derived>& x, std::optional<size_t> n, size_t axis, Norm norm, size_t nthreads);
         template <bool forward, typename Derived>
@@ -57,6 +59,10 @@ namespace pfft
         template <bool forward, typename Derived>
         auto dct_1d_extrude(const MatrixBase<Derived>& x, size_t type, std::optional<size_t> n, size_t axis, Norm norm,
                             size_t workers, std::optional<bool> orthogonalize);
+        template <bool forward, typename Derived>
+        auto dstn(const MatrixBase<Derived>& x, size_t type, const std::optional<pocketfft::shape_t>& s,
+                  const std::optional<pocketfft::shape_t>& axes, Norm norm, size_t workers,
+                  std::optional<bool> orthogonalize);
     }
 
     template <typename Derived>
@@ -99,6 +105,14 @@ namespace pfft
     auto idct(const MatrixBase<Derived>& x, size_t type=2, std::optional<size_t> n=std::nullopt,
               size_t axis=Derived::IsVectorAtCompileTime ? 0:1, Norm norm=Norm::backward, size_t workers=1,
               std::optional<bool> orthogonalize=std::nullopt);
+    template <typename Derived>
+    auto dstn(const MatrixBase<Derived>& x, size_t type=2, const pocketfft::shape_t& s={},
+              const pocketfft::shape_t& axes={}, Norm norm=Norm::backward, size_t workers=1,
+              std::optional<bool> orthogonalize=std::nullopt);
+    template <typename Derived>
+    auto idstn(const MatrixBase<Derived>& x, size_t type=2, const pocketfft::shape_t& s={},
+               const pocketfft::shape_t& axes={}, Norm norm=Norm::backward, size_t workers=1,
+               std::optional<bool> orthogonalize=std::nullopt);
 }
 
 
@@ -205,6 +219,29 @@ inline void pfft::core::fft2_check(size_t r, size_t c, const std::optional<pocke
         throw std::out_of_range("Entries of axes must be 0 or 1");
     if ((r == 1 || c == 1) && axes_max != 0)
         throw std::out_of_range("1D array inputs do not support non-zero axes entries");
+}
+
+inline void pfft::core::dstn_dctn_check(size_t dim, size_t type, const std::optional<pocketfft::shape_t>& s,
+                                        const std::optional<pocketfft::shape_t>& axes, bool dst)
+{
+    if (dim > 2)
+        throw std::out_of_range("Input array must be of dimension 1 or 2");
+    if (type == 0 || type > 4)
+        throw std::invalid_argument(std::format("Invalid {} type", dst ? "DST" : "DCT"));
+    if (s.has_value() && !axes.has_value())
+        if (s->size() > dim)
+            throw std::invalid_argument("Shape s must not require more axes than are present");
+    if (axes.has_value())
+    {
+        const size_t axes_max = *std::ranges::max_element(axes->begin(), axes->end());
+        if (hasDuplicates(axes.value()))
+            throw std::out_of_range("All axes must be unique");
+        if (axes->size() > dim || axes_max >= dim)
+            throw std::invalid_argument("Input axes exceeds dimensionality of input");
+        if (s.has_value())
+            if (s->size() != axes->size())
+                throw std::invalid_argument("When given, axes and shape arguments must be of the same length");
+    }
 }
 
 template <bool forward, typename Derived>
@@ -719,6 +756,70 @@ auto pfft::core::dct_1d_extrude(const MatrixBase<Derived>& x, size_t type, std::
     }
 }
 
+template <bool forward, typename Derived>
+auto pfft::core::dstn(const MatrixBase<Derived>& x, size_t type, const std::optional<pocketfft::shape_t>& s,
+                      const std::optional<pocketfft::shape_t>& axes, Norm norm, size_t workers,
+                      std::optional<bool> orthogonalize)
+{
+    using S = Derived::Scalar;
+    using R = NumTraits<S>::Real;
+    dstn_dctn_check(Derived::NumDimensions, type, s, axes, true);
+
+    if constexpr (NumTraits<S>::IsComplex)
+    {
+        Matrix<R, Dynamic, Dynamic> re = dstn<forward>(x.real(), type, s, axes, norm, workers, orthogonalize);
+        Matrix<R, Dynamic, Dynamic> im = dstn<forward>(x.imag(), type, s, axes, norm, workers, orthogonalize);
+        Matrix<S, Dynamic, Dynamic> out(re.rows(), re.cols());
+        out.real() = re;
+        out.imag() = im;
+
+        return out;
+    }
+    else
+    {
+        constexpr bool is_vec = Derived::IsVectorAtCompileTime;
+        constexpr size_t dim = is_vec ? 1 : 2;
+        constexpr size_t vec_axis = Derived::ColsAtCompileTime == 1 ? 0 : 1;  // To handle row matrices
+        auto map_to_phys = [&](size_t ax) { return is_vec ? vec_axis : ax; };  // To set physical axes
+        pocketfft::shape_t axes_logic;  // Logical axes
+        if (axes.has_value())
+            axes_logic = axes.value();
+        else if (s.has_value())
+            for (size_t k = 0; k < s->size(); k++)
+                axes_logic.push_back(dim - s->size() + k);
+        else
+            for (size_t k = 0; k < dim; k++)
+                axes_logic.push_back(k);
+        pocketfft::shape_t axes_phys;  // Physical axes
+        for (const size_t a : axes_logic)
+            axes_phys.push_back(map_to_phys(a));
+
+        size_t M = x.rows(), N = x.cols();  // if s is empty
+        if (s.has_value())
+            for (size_t k = 0; k < s->size(); k++)
+                (axes_phys[k] == 0 ? M : N) = s->at(k);
+        if (M == 0 || N == 0)
+            throw std::invalid_argument("Invalid DST length");
+        const size_t t = forward ? type : (type == 2 ? 3 : type == 3 ? 2 : type);
+        const bool ortho = orthogonalize.value_or(norm == Norm::ortho);
+        const size_t M_dst = type == 1 ? 2*(M+1) : 2*M;
+        const size_t N_dst = type == 1 ? 2*(N+1) : 2*N;
+        size_t ndst = 1;  // Normalize along transformed axes only
+        for (const size_t a : axes_phys)
+            ndst *= (a == 0 ? M_dst : N_dst);
+        const R fct = scale<R>(norm, ndst, forward);
+
+        InputView2D<Derived, R> in(x, M, N);  // Zero-pad or crop
+        Matrix<R, Dynamic, Dynamic> out(M, N);
+        constexpr auto rsz = static_cast<std::ptrdiff_t>(sizeof(R));
+        const pocketfft::shape_t shape = {M, N};
+        const pocketfft::stride_t stride_out = {out.rowStride()*rsz, out.colStride()*rsz};
+        pocketfft::dst(shape, in.stride(), stride_out, axes_phys, t, in.ptr(), out.data(), fct, ortho, workers);
+
+        return out;
+    }
+}
+
 template <typename Derived>
 auto pfft::fft(const MatrixBase<Derived>& x, std::optional<size_t> n, size_t axis, Norm norm, size_t nthreads)
 {
@@ -857,4 +958,30 @@ auto pfft::idct(const MatrixBase<Derived>& x, size_t type, std::optional<size_t>
         return core::dct_1d<false>(x, type, n, axis, norm, workers, orthogonalize);
     else
         return core::dct_1d_extrude<false>(x, type, n, axis, norm, workers, orthogonalize);
+}
+
+template <typename Derived>
+auto pfft::dstn(const MatrixBase<Derived>& x, size_t type, const pocketfft::shape_t& s, const pocketfft::shape_t& axes,
+                Norm norm, size_t workers, std::optional<bool> orthogonalize)
+{
+    std::optional<pocketfft::shape_t> s_opt, axes_opt;
+    if (!s.empty())
+        s_opt = s;
+    if (!axes.empty())
+        axes_opt = axes;
+
+    return core::dstn<true>(x, type, s_opt, axes_opt, norm, workers, orthogonalize);
+}
+
+template <typename Derived>
+auto pfft::idstn(const MatrixBase<Derived>& x, size_t type, const pocketfft::shape_t& s, const pocketfft::shape_t& axes,
+                 Norm norm, size_t workers, std::optional<bool> orthogonalize)
+{
+    std::optional<pocketfft::shape_t> s_opt, axes_opt;
+    if (!s.empty())
+        s_opt = s;
+    if (!axes.empty())
+        axes_opt = axes;
+
+    return core::dstn<false>(x, type, s_opt, axes_opt, norm, workers, orthogonalize);
 }

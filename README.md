@@ -18,8 +18,8 @@ In what follows, the notations `np` and `sp` are adopted to represent the usual 
 u_hat = np.fft.fft(u)  // Python
 auto u_hat = pfft::fft(u);  // EigenPocketFFT
 
-u_hat = np.fft.fft(u, n=5, axis=0, norm="forward")  // Python
-auto u_hat = pfft::fft(u, 5, 0, pfft::Norm::forward);  // EigenPocketFFT
+u_hat = np.fft.ifft(u, n=5, axis=0, norm="forward")  // Python
+auto u_hat = pfft::ifft(u, 5, 0, pfft::Norm::forward);  // EigenPocketFFT
 
 u_hat = np.fft.rfft(u, axis=0, norm="ortho")  // Python
 auto u_hat = pfft::rfft(u, std::nullopt, 0, pfft::Norm::ortho);  // EigenPocketFFT
@@ -28,7 +28,7 @@ u_hat = np.fft.irfft(u, n=7, norm="backward")  // Python
 auto u_hat = pfft::irfft(u, 7, std::nullopt, pfft::Norm::backward);  // EigenPocketFFT
 
 M_hat = np.fft.fft2(M, s=(5, 7, 3), axes=(1, 0, 1), norm="forward")  // Python
-auto M_hat = pfft::fft2(u, {5, 7, 3}, {1, 0, 1}, pfft::Norm::forward);  // EigenPocketFFT
+auto M_hat = pfft::fft2(M, {5, 7, 3}, {1, 0, 1}, pfft::Norm::forward);  // EigenPocketFFT
 
 M_hat = np.fft.rfft2(M, axes=(1, 0))  // Python
 auto M_hat = pfft::rfft2(M, {}, {1, 0});  // EigenPocketFFT
@@ -59,7 +59,11 @@ Here are exceptions where EigenPocketFFT slightly deviates from the definitions 
   auto hat = pfft::fft2(M, {}, {0, 1}, pfft::Norm::backward, 2);
   ```
 
-The user may refer to the documentation of NumPy and SciPy for more details about the wrapped functions, while taking into account the above few exceptions.
+The FFT wrappers have `n` (for 1D) and `s` (for 2D) as optional input parameters.
+On the other hand, `n`, `axis` (for 1D) and `s`, `axes` (for 2D), together with `orthogonalize` for both dimensions, are all optional in the DST and DCT functions.
+Should the optional arguments be assigned `None` (as in Python), `std::nullopt` and `{}` can be used for 1D and 2D input parameters, respectively.
+
+The user may refer to the documentation of NumPy and SciPy for more details about the features of the wrapped functions, while taking into account the above few exceptions.
 
 ## Requirements
 

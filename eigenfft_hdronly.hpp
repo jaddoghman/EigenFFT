@@ -59,6 +59,9 @@ namespace pfft
         template <bool forward, typename Derived>
         auto dct_1d_extrude(const MatrixBase<Derived>& x, size_t type, std::optional<size_t> n, size_t axis, Norm norm,
                             size_t workers, std::optional<bool> orthogonalize);
+        template <typename Derived>
+        pocketfft::shape_t resolve_axes(const std::optional<pocketfft::shape_t>& axes,
+                                        const std::optional<pocketfft::shape_t>& s);
         template <bool forward, typename Derived>
         auto dstn_2d(const MatrixBase<Derived>& x, size_t type, const std::optional<pocketfft::shape_t>& s,
                      const std::optional<pocketfft::shape_t>& axes, Norm norm, size_t workers,
@@ -756,6 +759,30 @@ auto pfft::core::dct_1d_extrude(const MatrixBase<Derived>& x, size_t type, std::
     }
 }
 
+template <typename Derived>
+pocketfft::shape_t pfft::core::resolve_axes(const std::optional<pocketfft::shape_t>& axes,
+                                            const std::optional<pocketfft::shape_t>& s)
+{
+    constexpr bool is_vec = Derived::IsVectorAtCompileTime;
+    constexpr size_t dim = is_vec ? 1 : 2;
+    constexpr size_t vec_axis = Derived::ColsAtCompileTime == 1 ? 0 : 1;  // To handle row matrices
+    auto map_to_phys = [&](size_t ax) { return is_vec ? vec_axis : ax; };  // To set physical axes
+    pocketfft::shape_t axes_logic;  // Logical axes
+    if (axes.has_value())
+        axes_logic = axes.value();
+    else if (s.has_value())
+        for (size_t k = 0; k < s->size(); k++)
+            axes_logic.push_back(dim - s->size() + k);
+    else
+        for (size_t k = 0; k < dim; k++)
+            axes_logic.push_back(k);
+    pocketfft::shape_t axes_phys;  // Physical axes
+    for (const size_t a : axes_logic)
+        axes_phys.push_back(map_to_phys(a));
+
+    return axes_phys;
+}
+
 template <bool forward, typename Derived>
 auto pfft::core::dstn_2d(const MatrixBase<Derived>& x, size_t type, const std::optional<pocketfft::shape_t>& s,
                          const std::optional<pocketfft::shape_t>& axes, Norm norm, size_t workers,
@@ -777,27 +804,11 @@ auto pfft::core::dstn_2d(const MatrixBase<Derived>& x, size_t type, const std::o
     }
     else
     {
-        constexpr bool is_vec = Derived::IsVectorAtCompileTime;
-        constexpr size_t dim = is_vec ? 1 : 2;
-        constexpr size_t vec_axis = Derived::ColsAtCompileTime == 1 ? 0 : 1;  // To handle row matrices
-        auto map_to_phys = [&](size_t ax) { return is_vec ? vec_axis : ax; };  // To set physical axes
-        pocketfft::shape_t axes_logic;  // Logical axes
-        if (axes.has_value())
-            axes_logic = axes.value();
-        else if (s.has_value())
-            for (size_t k = 0; k < s->size(); k++)
-                axes_logic.push_back(dim - s->size() + k);
-        else
-            for (size_t k = 0; k < dim; k++)
-                axes_logic.push_back(k);
-        pocketfft::shape_t axes_phys;  // Physical axes
-        for (const size_t a : axes_logic)
-            axes_phys.push_back(map_to_phys(a));
-
+        const pocketfft::shape_t axes_in = resolve_axes<Derived>(axes, s);
         size_t M = x.rows(), N = x.cols();  // if s is empty
         if (s.has_value())
             for (size_t k = 0; k < s->size(); k++)
-                (axes_phys[k] == 0 ? M : N) = s->at(k);
+                (axes_in[k] == 0 ? M : N) = s->at(k);
         if (M == 0 || N == 0)
             throw std::invalid_argument("Invalid DST length");
         const size_t t = forward ? type : (type == 2 ? 3 : type == 3 ? 2 : type);
@@ -805,7 +816,7 @@ auto pfft::core::dstn_2d(const MatrixBase<Derived>& x, size_t type, const std::o
         const size_t M_dst = type == 1 ? 2*(M+1) : 2*M;
         const size_t N_dst = type == 1 ? 2*(N+1) : 2*N;
         size_t ndst = 1;  // Normalize along transformed axes only
-        for (const size_t a : axes_phys)
+        for (const size_t a : axes_in)
             ndst *= (a == 0 ? M_dst : N_dst);
         const R fct = scale<R>(norm, ndst, forward);
 
@@ -814,7 +825,7 @@ auto pfft::core::dstn_2d(const MatrixBase<Derived>& x, size_t type, const std::o
         constexpr auto rsz = static_cast<std::ptrdiff_t>(sizeof(R));
         const pocketfft::shape_t shape = {M, N};
         const pocketfft::stride_t stride_out = {out.rowStride()*rsz, out.colStride()*rsz};
-        pocketfft::dst(shape, in.stride(), stride_out, axes_phys, t, in.ptr(), out.data(), fct, ortho, workers);
+        pocketfft::dst(shape, in.stride(), stride_out, axes_in, t, in.ptr(), out.data(), fct, ortho, workers);
 
         return out;
     }
